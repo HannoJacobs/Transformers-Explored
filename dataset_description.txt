@@ -1,0 +1,42 @@
+# English-Afrikaans Parallel Translation Dataset
+
+## Overview
+This dataset contains parallel sentence pairs for English-to-Afrikaans machine translation. The dataset is designed for training sequence-to-sequence transformer models to perform neural machine translation between English (source) and Afrikaans (target) languages.
+
+## Dataset Statistics
+- **Total Size**: 526,648 sentence pairs (after filtering)
+- **Source Language**: English (eng)
+- **Target Language**: Afrikaans (afr)
+- **Maximum Sentence Length**: 10 words per sentence (both source and target)
+- **Text Format**: Lowercase, alphabetic characters only
+- **File Format**: CSV with columns 'src' and 'target'
+
+## Data Processing
+The dataset has undergone the following preprocessing steps:
+1. **Text Normalization**: All text converted to lowercase
+2. **Character Filtering**: Non-alphabetic characters removed (except spaces)
+3. **Length Filtering**: Sentences longer than 10 words excluded
+4. **Whitespace Normalization**: Multiple spaces reduced to single spaces
+5. **Encoding**: UTF-8 encoding maintained throughout
+
+## Available Dataset Sizes
+- `eng_afr_parallel_1000_rows.csv` - 1,000 sentence pairs (for quick testing)
+- `eng_afr_parallel_10000_rows.csv` - 10,000 sentence pairs (for development)
+- `eng_afr_parallel_100000_rows.csv` - 100,000 sentence pairs (for training)
+- `eng_afr_parallel.csv` - Full dataset (526,648 pairs)
+
+## Sample Data
+src,target
+discuss extended incontinence under the following headings,bespreek langdurige inkontinensie onder die hoofde
+glyptic art reached a peak in the middle assyrian period,gliptiese kuns het n hoogtepunt bereik tydens die middelassiriese tydperk
+will be discussed in class,sal in die klas bespreek word
+proceedings national,verrigtinge nasionaal
+occurrence of diseases,voorkoms van siektes
+very little information collected at any given point,baie min inligting gegee op enige gegewe punt
+environmental levy estate duty fuel tax provisional tax valueadded tax,omgewingsheffing boedelbelasting brandstofheffing voorlopige belasting belasting op toegevoegde waarde
+reread the outcomes of study unit,lees weer deur die uitkomste van leereenheid
+release off oxygen,suurstof word afgegee
+social studies,leereenheid sosiale studies
+the facilities and apparatus that are required,die fasiliteite en apparaat wat benodig word
+time allocated for unit section assignment,tyd toegeken vir leereenheid gedeelte opdrag
+and most importantly your planter must be ready to go,hierdie implement het die belangrikste werk van alles
