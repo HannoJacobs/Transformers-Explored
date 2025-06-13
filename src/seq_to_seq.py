@@ -14,7 +14,7 @@ from torch import nn
 from torch import optim
 from torch.utils.data import Dataset, DataLoader, random_split
 
-NUM_ROWS = 100
+NUM_ROWS = "full"
 DATA_PATH = f"Datasets/eng_afr/eng_afr_{NUM_ROWS}_rows.csv"
 
 BATCH_SIZE = 64
