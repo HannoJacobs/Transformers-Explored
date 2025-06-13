@@ -14,12 +14,12 @@ from torch import nn
 from torch import optim
 from torch.utils.data import Dataset, DataLoader, random_split
 
-NUM_ROWS = "full"
-# NUM_ROWS = 100000
+# NUM_ROWS = "full"
+NUM_ROWS = 100
 DATA_PATH = f"Datasets/eng_afr/eng_afr_{NUM_ROWS}_rows.csv"
 
 BATCH_SIZE = 64
-EPOCHS = 10
+EPOCHS = 3
 LEARNING_RATE = 3e-4
 D_MODEL = 512
 NHEAD = 8
@@ -329,6 +329,7 @@ if __name__ == "__main__":
     train_accs, val_accs = [], []
     epochs_range = range(1, EPOCHS + 1)
     for ep in epochs_range:
+        epoch_start_time = time.time()
         tr_loss, tr_acc = train_epoch(
             MODEL, train_dl, optimizer, loss_criterion, PAD_ID
         )
@@ -337,10 +338,16 @@ if __name__ == "__main__":
         val_losses.append(vl_loss)
         train_accs.append(tr_acc)
         val_accs.append(vl_acc)
+
+        epoch_end_time = time.time()
+        epoch_minutes, epoch_seconds = divmod(
+            int(epoch_end_time - epoch_start_time), 60
+        )
         print(
             f"Epoch {ep:02d}/{EPOCHS} │ "
-            f"train_loss={tr_loss:.4f} acc={tr_acc:.3%} │ "
-            f"val_loss={vl_loss:.4f} acc={vl_acc:.3%}"
+            f"train_loss={tr_loss:.3f} acc={tr_acc:.2%} │ "
+            f"val_loss={vl_loss:.3f} acc={vl_acc:.2%} │ "
+            f"Time: {epoch_minutes}m {epoch_seconds}s"
         )
 
     # ---- 6. Save ----
