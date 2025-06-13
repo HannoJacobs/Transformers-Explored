@@ -10,12 +10,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import torch
 from torch import nn
-from torch.nn import (
-    TransformerEncoder,
-    TransformerEncoderLayer,
-    TransformerDecoder,
-    TransformerDecoderLayer,
-)
 from torch import optim
 from torch.utils.data import Dataset, DataLoader, random_split
 
@@ -162,23 +156,23 @@ class TransformerModel(nn.Module):
         )
 
         # Separate encoder and decoder
-        enc_layer = TransformerEncoderLayer(
+        enc_layer = nn.TransformerEncoderLayer(
             d_model=D_MODEL,
             nhead=NHEAD,
             dim_feedforward=DIM_FEEDFORWARD,
             dropout=DROPOUT,
             batch_first=False,
         )
-        self.encoder = TransformerEncoder(enc_layer, num_layers=NUM_LAYERS)
+        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=NUM_LAYERS)
 
-        dec_layer = TransformerDecoderLayer(
+        dec_layer = nn.TransformerDecoderLayer(
             d_model=D_MODEL,
             nhead=NHEAD,
             dim_feedforward=DIM_FEEDFORWARD,
             dropout=DROPOUT,
             batch_first=False,
         )
-        self.decoder = TransformerDecoder(dec_layer, num_layers=NUM_LAYERS)
+        self.decoder = nn.TransformerDecoder(dec_layer, num_layers=NUM_LAYERS)
 
         self.projection = nn.Linear(in_features=D_MODEL, out_features=len(target_vocab))
 
