@@ -36,15 +36,10 @@ print(f"🖥️  device = {DEVICE}")
 
 
 def tokenize(text: str) -> list[str]:
-    """Word-level tokenizer that separates punctuation."""
-    # Split on whitespace first, then separate punctuation
-    words = text.split()
-    tokens = []
-    for word in words:
-        # Find word characters and punctuation
-        parts = re.findall(r"\w+|[^\w\s]", word)
-        tokens.extend(parts)
-    return [token.lower() for token in tokens]
+    """Word-level tokenizer that ignores punctuation."""
+    # Find only word characters, ignoring punctuation
+    words = re.findall(r"\b\w+\b", text)
+    return [word.lower() for word in words]
 
 
 def build_vocab(texts: list[str], min_freq: int = 1) -> tuple[dict, dict]:
@@ -152,7 +147,7 @@ class TransformerModel(nn.Module):
             d_model=D_MODEL, dropout=DROPOUT, max_len=MAX_SEQ_LEN
         )
 
-        # Decoder-only architecture
+        # Decoder-only architecture - keep this!
         dec_layer = nn.TransformerDecoderLayer(
             d_model=D_MODEL,
             nhead=NHEAD,
@@ -168,10 +163,10 @@ class TransformerModel(nn.Module):
         # Embed and add positional encoding
         x = self.position_encode(self.embed(x) * math.sqrt(self.d_model))
 
-        # Self-attention with causal mask (decoder attending to itself)
+        # Self-attention with causal mask (your original approach was fine)
         out = self.decoder(
             tgt=x,
-            memory=x,  # Use same sequence as memory for self-attention
+            memory=x,  # This is actually fine for decoder-only
             tgt_mask=attn_mask.to(x.device),
             tgt_key_padding_mask=key_pad_mask,
             memory_key_padding_mask=key_pad_mask,
@@ -241,9 +236,6 @@ def infer(model, prompt, vocab, inv_vocab, max_len=100):
         token_ids = [vocab[BOS_TOKEN]] + token_ids
 
     for _ in range(max_len):
-        if len(token_ids) >= INPUT_MAX_SEQ_LEN:
-            break
-
         # Prepare input
         x = torch.tensor(token_ids, device=DEVICE).unsqueeze(1)  # (T, 1)
         seq_len = x.size(0)
