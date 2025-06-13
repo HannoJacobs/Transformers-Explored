@@ -5,6 +5,7 @@ import os
 import re
 import math
 import datetime
+import time
 
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -13,9 +14,8 @@ from torch import nn
 from torch import optim
 from torch.utils.data import Dataset, DataLoader, random_split
 
-DATA_PATH = "Datasets/eng_afr/eng_afr_parallel_1000_rows.csv"
-# DATA_PATH = "Datasets/eng_afr/eng_afr_parallel_10000_rows.csv"
-# DATA_PATH = "Datasets/eng_afr/eng_afr_parallel_100000_rows.csv"
+NUM_ROWS = 100
+DATA_PATH = f"Datasets/eng_afr/eng_afr_{NUM_ROWS}_rows.csv"
 
 BATCH_SIZE = 64
 EPOCHS = 10
@@ -289,6 +289,7 @@ def infer(model, sentence, source_vocab, target_vocab, inv_target_vocab):
 
 
 if __name__ == "__main__":
+    start_time = time.time()
     # ---- 1. Load data ----
     DF = pd.read_csv(DATA_PATH)
     print(f"Loaded {len(DF):,} sentence pairs")
@@ -348,9 +349,13 @@ if __name__ == "__main__":
     os.makedirs(LOGGING_DIR, exist_ok=True)
     ts = datetime.datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
 
+    # Get filename without extension for prefixing
+    script_name = os.path.basename(__file__)
+    filename_base = os.path.splitext(script_name)[0]
+
     # --- Save model (timestamped and latest) ---
-    model_save_path = os.path.join(MODELS_DIR, f"model-{ts}.pth")
-    latest_model_path = os.path.join(MODELS_DIR, "model_latest.pth")
+    model_save_path = os.path.join(MODELS_DIR, f"{filename_base}_{ts}.pth")
+    latest_model_path = os.path.join(MODELS_DIR, f"{filename_base}_latest.pth")
     save_dict = {
         "model_state": MODEL.state_dict(),
         "src_vocab": src_vocab,
@@ -361,9 +366,20 @@ if __name__ == "__main__":
     print(f"Model saved to {model_save_path} and {latest_model_path}")
 
     # --- Save loss plot (timestamped and latest) ---
-    loss_plot_path = os.path.join(LOGGING_DIR, f"losses-{ts}.png")
-    latest_loss_plot_path = os.path.join(LOGGING_DIR, "latest_losses.png")
+    loss_plot_path = os.path.join(LOGGING_DIR, f"{filename_base}_losses_{ts}.png")
+    latest_loss_plot_path = os.path.join(
+        LOGGING_DIR, f"{filename_base}_losses_latest.png"
+    )
+
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+
+    # Add a title to the figure
+    fig.suptitle(
+        f"{script_name}\n{DATA_PATH}\nEpochs: {EPOCHS}, Batch Size: {BATCH_SIZE}, LR: {LEARNING_RATE}",
+        fontsize=14,
+    )
+
+    epochs_range = range(1, EPOCHS + 1)
     ax1.plot(epochs_range, train_losses, label="Training Loss")
     ax1.plot(epochs_range, val_losses, label="Validation Loss")
     ax1.set_xlabel("Epoch")
@@ -371,6 +387,7 @@ if __name__ == "__main__":
     ax1.set_title("Training and Validation Loss")
     ax1.legend()
     ax1.grid(True)
+
     ax2.plot(epochs_range, train_accs, label="Training Accuracy")
     ax2.plot(epochs_range, val_accs, label="Validation Accuracy")
     ax2.set_xlabel("Epoch")
@@ -379,11 +396,17 @@ if __name__ == "__main__":
     ax2.set_title("Training and Validation Accuracy")
     ax2.legend()
     ax2.grid(True)
-    plt.tight_layout()
+
+    plt.tight_layout(rect=[0, 0, 1, 0.92])
     plt.savefig(loss_plot_path)
     plt.savefig(latest_loss_plot_path)
     plt.close(fig)
     print(f"Plots saved to {loss_plot_path} and {latest_loss_plot_path}")
+
+    # Calculate and print total runtime
+    total_seconds = int(time.time() - start_time)
+    minutes, seconds = divmod(total_seconds, 60)
+    print(f"\nTotal runtime: {minutes}m {seconds}s")
 
     # ---- 7. Demo ----
     DEMO = "what is your name"
