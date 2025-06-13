@@ -13,10 +13,10 @@ from torch import nn
 from torch import optim
 from torch.utils.data import Dataset, DataLoader, random_split
 
-DATA_PATH = "Datasets/tiny_shakespeare_2_nano.txt"
+DATA_PATH = "Datasets/tiny_shakespeare_1_mini.txt"
 
 BATCH_SIZE = 64
-EPOCHS = 3
+EPOCHS = 5
 LEARNING_RATE = 3e-4
 D_MODEL = 512
 NHEAD = 8
