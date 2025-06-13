@@ -19,8 +19,8 @@ from torch.nn import (
 from torch import optim
 from torch.utils.data import Dataset, DataLoader, random_split
 
-# DATA_PATH = "Datasets/eng_afr/eng_afr_parallel_1000_rows.csv"
-DATA_PATH = "Datasets/eng_afr/eng_afr_parallel_10000_rows.csv"
+DATA_PATH = "Datasets/eng_afr/eng_afr_parallel_1000_rows.csv"
+# DATA_PATH = "Datasets/eng_afr/eng_afr_parallel_10000_rows.csv"
 # DATA_PATH = "Datasets/eng_afr/eng_afr_parallel_100000_rows.csv"
 
 BATCH_SIZE = 64
@@ -80,10 +80,10 @@ class TranslationDataset(Dataset):
         for src_sentence, tgt_sentence in zip(df["src"], df["target"]):
             src_tokens = tokenize(src_sentence)
             tgt_tokens = tokenize(tgt_sentence)
-            s_tok = encode(src_tokens[:INPUT_MAX_SEQ_LEN], source_vocab)
-            t_tok = encode(tgt_tokens[:OUTPUT_MAX_SEQ_LEN], target_vocab)
-            if s_tok and t_tok:
-                self.data.append((s_tok, t_tok))
+            src_tokens_encoded = encode(src_tokens[:INPUT_MAX_SEQ_LEN], source_vocab)
+            tgt_tokens_encoded = encode(tgt_tokens[:OUTPUT_MAX_SEQ_LEN], target_vocab)
+            if src_tokens_encoded and tgt_tokens_encoded:
+                self.data.append((src_tokens_encoded, tgt_tokens_encoded))
 
     def __len__(self):
         return len(self.data)
@@ -208,7 +208,7 @@ class TransformerModel(nn.Module):
         return self.decode(mem, src_pad, tgt_in, tgt_mask, tgt_pad)
 
 
-def train_epoch(model, loader, opt, crit, pad_id):
+def train_epoch(model, loader, optimizer_, loss_criterion_, pad_id):
     """Trains the model for one epoch."""
     model.train()
     tot_loss = tot_batches = 0
@@ -218,12 +218,12 @@ def train_epoch(model, loader, opt, crit, pad_id):
         tgt_in, tgt_out = tgt_in.to(DEVICE), tgt_out.to(DEVICE)
         tgt_mask, tgt_pad = tgt_mask.to(DEVICE), tgt_pad.to(DEVICE)
 
-        opt.zero_grad()
+        optimizer_.zero_grad()
         logits = model(src, src_pad, tgt_in, tgt_mask, tgt_pad)
-        loss = crit(logits.reshape(-1, logits.size(-1)), tgt_out.reshape(-1))
+        loss = loss_criterion_(logits.reshape(-1, logits.size(-1)), tgt_out.reshape(-1))
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        opt.step()
+        optimizer_.step()
 
         # ---- accuracy (token level, ignores PAD) ----
         with torch.no_grad():
@@ -238,7 +238,7 @@ def train_epoch(model, loader, opt, crit, pad_id):
 
 
 @torch.no_grad()
-def eval_epoch(model, loader, crit, pad_id):
+def eval_epoch(model, loader, loss_criterion_, pad_id):
     """Evaluates the model for one epoch."""
     model.eval()
     tot_loss = tot_batches = 0
@@ -249,7 +249,7 @@ def eval_epoch(model, loader, crit, pad_id):
         tgt_mask, tgt_pad = tgt_mask.to(DEVICE), tgt_pad.to(DEVICE)
 
         logits = model(src, src_pad, tgt_in, tgt_mask, tgt_pad)
-        loss = crit(logits.reshape(-1, logits.size(-1)), tgt_out.reshape(-1))
+        loss = loss_criterion_(logits.reshape(-1, logits.size(-1)), tgt_out.reshape(-1))
 
         pred = logits.argmax(-1)
         mask = tgt_out.ne(pad_id)
