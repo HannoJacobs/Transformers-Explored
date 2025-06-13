@@ -1,354 +1,380 @@
-# pylint: disable=C3001,R0914,R0913,R0917,C0115,C0413,C0116,C0301,C0103
-"""Pytorch template"""
+"""Seq 2 Seq Transformer Model"""
+
+# pylint: disable=C3001,R0914,R0913,R0917
 import os
-import time
+import re
+import math
 import datetime
 
 import pandas as pd
 import matplotlib.pyplot as plt
 import torch
-from torch import nn, optim
-from torch.utils.data import Dataset, DataLoader
-from sklearn.model_selection import train_test_split
+from torch import nn
+from torch import optim
+from torch.utils.data import Dataset, DataLoader, random_split
 
-DATA_PATH = "Datasets/synth_i5_r0-9_n-1000.csv"
+DATA_PATH = "Datasets/eng_afr/eng_afr_parallel_1000_rows.csv"
+# DATA_PATH = "Datasets/eng_afr/eng_afr_parallel_10000_rows.csv"
+# DATA_PATH = "Datasets/eng_afr/eng_afr_parallel_500000_rows.csv"
+
+BATCH_SIZE = 64
+EPOCHS = 10
+LEARNING_RATE = 3e-4
+D_MODEL = 512
+NHEAD = 8
+NUM_LAYERS = 4
+DIM_FEEDFORWARD = 1024
+DROPOUT = 0.1
+INPUT_MAX_SEQ_LEN = 10
+OUTPUT_MAX_SEQ_LEN = 10
+MAX_GEN_LEN = 100
+MIN_FREQ = 1
+MASK_VAL = float("-inf")  # -1e9  # 🔑 large negative instead of -inf
+MAX_SEQ_LEN = max(INPUT_MAX_SEQ_LEN, OUTPUT_MAX_SEQ_LEN) + 2  # (+2 for BOS/EOS)
+PAD_TOKEN, UNK_TOKEN, BOS_TOKEN, EOS_TOKEN = "<pad>", "<unk>", "<bos>", "<eos>"
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"🖥️  device = {DEVICE}")
 
-BATCH_SIZE = 64
-EPOCHS = 100
-LEARNING_RATE = 1e-3
-DROPOUT = 0.1
 
-SEQ_LEN = 5
-VOCAB_SIZE = 10
-HIDDEN_SIZE = 64
-NUM_LAYERS = 2
-EMBEDDING_DIM = VOCAB_SIZE
-NUM_CLASSES = SEQ_LEN * VOCAB_SIZE
+def tokenize(text: str) -> list[str]:
+    """Simple word/punctuation tokenizer."""
+    _word_re = re.compile(r"\w+|[^\w\s]", re.UNICODE)
+    return _word_re.findall(text.lower())
 
 
-class ModelDataset(Dataset):
-    """Dataset from a CSV file."""
+def build_vocab(texts: list[str], min_freq: int = 1) -> tuple[dict, dict]:
+    """Builds vocab and inverse vocab from texts, filtering by min_freq."""
+    frequency: dict[str, int] = {}
+    for line in texts:
+        for tok in tokenize(line):
+            frequency[tok] = frequency.get(tok, 0) + 1
+    vocab = {PAD_TOKEN: 0, UNK_TOKEN: 1, BOS_TOKEN: 2, EOS_TOKEN: 3}
+    for tok in sorted(frequency):
+        if frequency[tok] >= min_freq:
+            vocab.setdefault(tok, len(vocab))
+    inv_vocab = {i: w for w, i in vocab.items()}
+    return vocab, inv_vocab
 
-    def __init__(self, df_: pd.DataFrame, input_cols: list[str], target_col: str):
-        self.features = torch.tensor(df_[input_cols].values, dtype=torch.long)
-        self.labels = torch.tensor(df_[target_col].values, dtype=torch.long)
+
+def encode(tokens: list[str], vocab: dict) -> list[int]:
+    """Converts tokens to integer IDs using the vocabulary."""
+    unk = vocab[UNK_TOKEN]
+    return [vocab.get(t, unk) for t in tokens]
+
+
+class TranslationDataset(Dataset):
+    """
+    (src_ids, tgt_ids) without BOS/EOS/PAD, truncated
+    to INPUT_MAX_SEQ_LEN and OUTPUT_MAX_SEQ_LEN
+    """
+
+    def __init__(self, df: pd.DataFrame, source_vocab: dict, target_vocab: dict):
+        self.data = []
+        for src_sentence, tgt_sentence in zip(df["src"], df["target"]):
+            src_tokens = tokenize(src_sentence)
+            tgt_tokens = tokenize(tgt_sentence)
+            s_tok = encode(src_tokens[:INPUT_MAX_SEQ_LEN], source_vocab)
+            t_tok = encode(tgt_tokens[:OUTPUT_MAX_SEQ_LEN], target_vocab)
+            if s_tok and t_tok:
+                self.data.append((s_tok, t_tok))
 
     def __len__(self):
-        return len(self.labels)
+        return len(self.data)
 
     def __getitem__(self, idx):
-        return self.features[idx], self.labels[idx]
+        return self.data[idx]
 
 
-def collate_fn(batch):
+def collate(batch, src_pad_id, tgt_pad_id, tgt_bos_id, tgt_eos_id):
     """
-    Collates a batch of features and labels for model.
-    features: (B, num_features)
-    labels: (B)
+    Pads and builds:
+    src         (S,B)
+    src_pad     (B,S)  bool
+    tgt_in/out  (T,B)
+    tgt_mask    (T,T)  float  0 / -1e9   <- causal
+    tgt_pad     (B,T)  bool
     """
-    features, labels = zip(*batch)
-    features_tensor = torch.stack(features)
-    labels_tensor = torch.stack(labels)
-    return features_tensor, labels_tensor
+    src_seqs, tgt_seqs = zip(*batch)
+    S = max(len(s) for s in src_seqs)
+    T = max(len(t) for t in tgt_seqs) + 1  # +1 for BOS/EOS
+
+    src = torch.full((S, len(batch)), src_pad_id, dtype=torch.long)
+    tgt_in = torch.full((T, len(batch)), tgt_pad_id, dtype=torch.long)
+    tgt_out = torch.full((T, len(batch)), tgt_pad_id, dtype=torch.long)
+
+    for i, (s, t) in enumerate(zip(src_seqs, tgt_seqs)):
+        src[: len(s), i] = torch.tensor(s)
+        tin = [tgt_bos_id] + t
+        tout = t + [tgt_eos_id]
+        tgt_in[: len(tin), i] = torch.tensor(tin)
+        tgt_out[: len(tout), i] = torch.tensor(tout)
+
+    src_key_pad = (src == src_pad_id).T  # (B,S)
+    tgt_key_pad = (tgt_in == tgt_pad_id).T  # (B,T)
+
+    # ---- additive causal mask (float) ----
+    tgt_mask = torch.triu(torch.full((T, T), MASK_VAL), diagonal=1)
+    tgt_mask.fill_diagonal_(0.0)  # diag = 0
+    return src, src_key_pad, tgt_in, tgt_out, tgt_mask.float(), tgt_key_pad
 
 
-class CustomModel(nn.Module):
-    """An LSTM-based model for sequence classification with embedding."""
+class PositionalEncoding(nn.Module):
+    """Adds positional encoding to the input embeddings."""
 
-    def __init__(
-        self,
-        hidden_size: int = HIDDEN_SIZE,
-        num_layers: int = NUM_LAYERS,
-        num_classes: int = NUM_CLASSES,
-        dropout: float = DROPOUT,
-        vocab_size: int = VOCAB_SIZE,
-        embedding_dim: int = EMBEDDING_DIM,
-    ):
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
         super().__init__()
-        self.embedding = nn.Embedding(
-            num_embeddings=vocab_size, embedding_dim=embedding_dim
+        pe = torch.zeros(max_len, d_model)
+        pos = torch.arange(0, max_len).unsqueeze(1).float()
+        div = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
         )
-        self.lstm = nn.LSTM(
-            input_size=embedding_dim,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout=dropout if num_layers > 1 else 0.0,
+        pe[:, 0::2] = torch.sin(pos * div)
+        pe[:, 1::2] = torch.cos(pos * div)
+        self.register_buffer("pe", pe.unsqueeze(1))
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x):  # (L,B,E)
+        """Adds positional encoding to input tensor."""
+        return self.drop(x + self.pe[: x.size(0)])
+
+
+class TransformerModel(nn.Module):
+    """A standard Transformer model for sequence-to-sequence tasks."""
+
+    def __init__(self, source_vocab, target_vocab):
+        super().__init__()
+        self.d_model = D_MODEL
+        self.source_embed = nn.Embedding(
+            num_embeddings=len(source_vocab), embedding_dim=D_MODEL, padding_idx=0
         )
-        self.fc = nn.Linear(hidden_size, num_classes)
+        self.target_embed = nn.Embedding(
+            num_embeddings=len(target_vocab), embedding_dim=D_MODEL, padding_idx=0
+        )
+        self.position_encode = PositionalEncoding(
+            d_model=D_MODEL, dropout=DROPOUT, max_len=MAX_SEQ_LEN
+        )
+        self.transformer = nn.Transformer(
+            d_model=D_MODEL,
+            nhead=NHEAD,
+            num_encoder_layers=NUM_LAYERS,
+            num_decoder_layers=NUM_LAYERS,
+            dim_feedforward=DIM_FEEDFORWARD,
+            dropout=DROPOUT,
+            batch_first=False,
+        )
+        self.projection = nn.Linear(in_features=D_MODEL, out_features=len(target_vocab))
 
-    def forward(self, x):
+    def encode(self, src, src_pad):
+        """Encodes the source sequence."""
+        x = self.position_encode(self.source_embed(src) * math.sqrt(self.d_model))
+        return self.transformer.encoder(x, src_key_padding_mask=src_pad)
+
+    def decode(self, mem, src_pad, tgt_in, tgt_mask, tgt_pad):
         """
-        x shape: (B, seq_len). Elements are token indices.
-        The data pipeline typically prepares sequences of length seq_len.
-        output shape: (B, num_classes) - raw logits
+        Decoder forward pass that reuses cached `mem` to avoid
+        redundant encoder computation during inference.
         """
-        # x shape: (batch, seq_len)
-        embedded = self.embedding(x)  # embedded shape: (batch, seq_len, embedding_dim)
+        y = self.position_encode(self.target_embed(tgt_in) * math.sqrt(self.d_model))
+        out = self.transformer.decoder(
+            tgt=y,
+            memory=mem,
+            tgt_mask=tgt_mask.to(y.device),
+            tgt_key_padding_mask=tgt_pad,
+            memory_key_padding_mask=src_pad,
+        )
+        return self.projection(out)  # (T,B,V)
 
-        # lstm_out shape: (batch, seq_len, lstm_hidden_size)
-        # hn shape: (num_lstm_layers, batch, lstm_hidden_size)
-        # cn shape: (num_lstm_layers, batch, lstm_hidden_size)
-        lstm_out, (hn, cn) = self.lstm(embedded)  # hn,cn unused # pylint: disable=W0612
-
-        # For sequence classification, we need a fixed-size representation for each input sequence.
-        # The LSTM (lstm_out) produces a hidden state for each time step in the input sequence.
-        # We select the hidden state from the *last time step* for every sequence in the batch.
-        # This 'last_time_step_output' serves as a summary of the entire input sequence
-        # and is used as input to the final classification layer.
-        last_time_step_output = lstm_out[:, -1, :]  # shape: (batch, lstm_hidden_size)
-        logits = self.fc(last_time_step_output)
-        return logits
+    def forward(self, src, src_pad, tgt_in, tgt_mask, tgt_pad):
+        """Forward pass for the Transformer model."""
+        mem = self.encode(src, src_pad)
+        return self.decode(mem, src_pad, tgt_in, tgt_mask, tgt_pad)
 
 
-def custom_loss_function(logits, targets):
-    """
-    Wrapper function for calculating the loss.
-    Instantiates and uses CrossEntropyLoss internally.
-    """
-    criterion = nn.CrossEntropyLoss()
-    loss_ = criterion(logits, targets)
-    return loss_
+def train_epoch(model, loader, opt, crit, pad_id):
+    """Trains the model for one epoch."""
+    model.train()
+    tot_loss = tot_batches = 0
+    tot_tok = tot_correct = 0
+    for src, src_pad, tgt_in, tgt_out, tgt_mask, tgt_pad in loader:
+        src, src_pad = src.to(DEVICE), src_pad.to(DEVICE)
+        tgt_in, tgt_out = tgt_in.to(DEVICE), tgt_out.to(DEVICE)
+        tgt_mask, tgt_pad = tgt_mask.to(DEVICE), tgt_pad.to(DEVICE)
 
-
-def train_epoch(model_, loader, optimizer_):
-    """Trains the model for one epoch and computes loss and accuracy."""
-    model_.train()
-    total_loss = 0.0
-    correct_predictions = 0
-    total_samples = 0
-
-    for features, targets in loader:
-        features, targets = features.to(DEVICE), targets.to(DEVICE)
-
-        optimizer_.zero_grad()
-        logits = model_(features)  # (B, num_classes)
-        loss = custom_loss_function(logits, targets)
-
+        opt.zero_grad()
+        logits = model(src, src_pad, tgt_in, tgt_mask, tgt_pad)
+        loss = crit(logits.reshape(-1, logits.size(-1)), tgt_out.reshape(-1))
         loss.backward()
-        nn.utils.clip_grad_norm_(model_.parameters(), 1.0)  # Optional: gradient clip
-        optimizer_.step()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        opt.step()
 
-        # loss.item() is avg loss for batch
-        total_loss += loss.item() * features.size(0)
+        # ---- accuracy (token level, ignores PAD) ----
+        with torch.no_grad():
+            pred = logits.argmax(-1)
+            mask = tgt_out.ne(pad_id)
+            tot_correct += (pred.eq(tgt_out) & mask).sum().item()
+            tot_tok += mask.sum().item()
 
-        preds = torch.argmax(logits, dim=1)
-        correct_predictions += (preds == targets).sum().item()
-        total_samples += targets.size(0)
-
-    avg_loss = total_loss / total_samples
-    accuracy = correct_predictions / total_samples
-    return avg_loss, accuracy
-
-
-@torch.no_grad()
-def eval_epoch(model_, loader):
-    """Evaluates the model and computes loss and accuracy."""
-    model_.eval()
-    total_loss = 0.0
-    correct_predictions = 0
-    total_samples = 0
-
-    for features, targets in loader:
-        features, targets = features.to(DEVICE), targets.to(DEVICE)
-
-        logits = model_(features)
-        loss = custom_loss_function(logits, targets)
-
-        total_loss += loss.item() * features.size(0)
-
-        preds = torch.argmax(logits, dim=1)
-        correct_predictions += (preds == targets).sum().item()
-        total_samples += targets.size(0)
-
-    avg_loss = total_loss / total_samples
-    accuracy = correct_predictions / total_samples
-    return avg_loss, accuracy
+        tot_loss += loss.item()
+        tot_batches += 1
+    return tot_loss / tot_batches, tot_correct / tot_tok
 
 
 @torch.no_grad()
-def infer(model_, feature_vector: list, seq_len: int):
-    """
-    Predicts the class for a single feature vector.
-    'seq_len' here refers to the expected sequence length of the feature_vector,
-    which should match the seq_len global constant used during training.
-    """
-    model_.eval()
-    if len(feature_vector) != seq_len:
-        raise ValueError(
-            f"Input feature vector length {len(feature_vector)} does not match model's expected seq_len {seq_len}"
+def eval_epoch(model, loader, crit, pad_id):
+    """Evaluates the model for one epoch."""
+    model.eval()
+    tot_loss = tot_batches = 0
+    tot_tok = tot_correct = 0
+    for src, src_pad, tgt_in, tgt_out, tgt_mask, tgt_pad in loader:
+        src, src_pad = src.to(DEVICE), src_pad.to(DEVICE)
+        tgt_in, tgt_out = tgt_in.to(DEVICE), tgt_out.to(DEVICE)
+        tgt_mask, tgt_pad = tgt_mask.to(DEVICE), tgt_pad.to(DEVICE)
+
+        logits = model(src, src_pad, tgt_in, tgt_mask, tgt_pad)
+        loss = crit(logits.reshape(-1, logits.size(-1)), tgt_out.reshape(-1))
+
+        pred = logits.argmax(-1)
+        mask = tgt_out.ne(pad_id)
+        tot_correct += (pred.eq(tgt_out) & mask).sum().item()
+        tot_tok += mask.sum().item()
+
+        tot_loss += loss.item()
+        tot_batches += 1
+    return tot_loss / tot_batches, tot_correct / tot_tok
+
+
+def infer(model, sentence, source_vocab, target_vocab, inv_target_vocab):
+    """Translates a source sentence using the trained model."""
+    model.eval()
+    src_ids = encode(tokenize(sentence)[:INPUT_MAX_SEQ_LEN], source_vocab)
+    src = torch.tensor(src_ids, device=DEVICE).unsqueeze(1)  # (S,1)
+    src_pad = (src == source_vocab[PAD_TOKEN]).T  # (1,S)
+    mem = model.encode(src, src_pad)  # cache encoder output once
+
+    tgt_ids = [target_vocab[BOS_TOKEN]]
+    for _ in range(MAX_GEN_LEN):
+        if len(tgt_ids) - 1 >= OUTPUT_MAX_SEQ_LEN:
+            break
+        tgt = torch.tensor(tgt_ids, device=DEVICE).unsqueeze(1)  # (T,1)
+        tgt_pad = (tgt == target_vocab[PAD_TOKEN]).T
+        tgt_mask = torch.triu(
+            torch.full((tgt.size(0), tgt.size(0)), MASK_VAL, device=DEVICE), diagonal=1
         )
+        tgt_mask.fill_diagonal_(0.0)
+        out = model.decode(mem, src_pad, tgt, tgt_mask, tgt_pad)  # <-- reuse `mem`
+        next_id = out[-1, 0].argmax().item()
+        if next_id == target_vocab[EOS_TOKEN]:
+            break
+        tgt_ids.append(next_id)
 
-    # Input features are now indices for the embedding layer
-    features_tensor = (
-        torch.tensor(feature_vector, dtype=torch.long).unsqueeze(0).to(DEVICE)
-    )
-    logits = model_(features_tensor)
-    prediction_ = torch.argmax(logits, dim=1).item()
-    return prediction_
+    words = [inv_target_vocab.get(i, UNK_TOKEN) for i in tgt_ids[1:]]
+    sent = []
+    for w in words:
+        if sent and w.isalnum():
+            sent.append(" ")
+        sent.append(w)
+    return "".join(sent)
 
 
 if __name__ == "__main__":
-    start_time = time.time()
-    df = pd.read_csv(DATA_PATH)
-    print(f"Loaded {len(df):,} samples from {DATA_PATH}")
+    # ---- 1. Load data ----
+    DF = pd.read_csv(DATA_PATH)
+    print(f"Loaded {len(DF):,} sentence pairs")
 
-    # Define input and target column names based on your CSV
-    INPUT_COL_NAMES = [f"input_{i+1}" for i in range(SEQ_LEN)]
-    TARGET_COL_NAME = "target"
+    # ---- 2. Vocab ----
+    src_vocab, inv_src_vocab = build_vocab(DF["src"], MIN_FREQ)
+    tgt_vocab, inv_tgt_vocab = build_vocab(DF["target"], MIN_FREQ)
+    print(f"Src vocab: {len(src_vocab):,} | Tgt vocab: {len(tgt_vocab):,}")
+    PAD_ID = tgt_vocab[PAD_TOKEN]
 
-    # 1. Split data
-    train_df, val_df = train_test_split(
-        df,
-        test_size=0.1,
-        random_state=42,
-        shuffle=True,
-        stratify=None,
+    # ---- 3. Dataset / DataLoader ----
+    full_ds = TranslationDataset(DF, src_vocab, tgt_vocab)
+    TRAIN_SZ = int(0.9 * len(full_ds))
+    train_ds, val_ds = random_split(
+        full_ds,
+        [TRAIN_SZ, len(full_ds) - TRAIN_SZ],
+        generator=torch.Generator().manual_seed(42),
     )
-    train_df = train_df.reset_index(drop=True)
-    val_df = val_df.reset_index(drop=True)
-
-    # 2. Dataset / DataLoader
-    train_ds = ModelDataset(
-        df_=train_df, input_cols=INPUT_COL_NAMES, target_col=TARGET_COL_NAME
+    collate_func = lambda b: collate(
+        b,
+        src_pad_id=src_vocab[PAD_TOKEN],
+        tgt_pad_id=tgt_vocab[PAD_TOKEN],
+        tgt_bos_id=tgt_vocab[BOS_TOKEN],
+        tgt_eos_id=tgt_vocab[EOS_TOKEN],
     )
-    val_ds = ModelDataset(
-        df_=val_df, input_cols=INPUT_COL_NAMES, target_col=TARGET_COL_NAME
-    )
-    train_dl = DataLoader(
-        dataset=train_ds, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn
-    )
-    val_dl = DataLoader(
-        dataset=val_ds, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn
-    )
+    train_dl = DataLoader(train_ds, BATCH_SIZE, shuffle=True, collate_fn=collate_func)
+    val_dl = DataLoader(val_ds, BATCH_SIZE, shuffle=False, collate_fn=collate_func)
 
-    # 3. Model / Optim
-    model = CustomModel(
-        hidden_size=HIDDEN_SIZE,
-        num_layers=NUM_LAYERS,
-        num_classes=NUM_CLASSES,
-        dropout=DROPOUT,
-        vocab_size=VOCAB_SIZE,
-        embedding_dim=EMBEDDING_DIM,
-    ).to(DEVICE)
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    # ---- 4. Model / Optim / Loss ----
+    MODEL = TransformerModel(src_vocab, tgt_vocab).to(DEVICE)
+    optimizer = optim.Adam(MODEL.parameters(), lr=LEARNING_RATE)
+    loss_criterion = nn.CrossEntropyLoss(ignore_index=tgt_vocab[PAD_TOKEN])
 
-    # 4. Training loop
-    train_losses = []
-    val_losses = []
-    train_accuracies = []
-    val_accuracies = []
-
-    print(f"\nStarting training for {EPOCHS} epochs on {DEVICE}...")
-    for ep in range(1, EPOCHS + 1):
-        epoch_start_time = time.time()
-
-        tr_loss, tr_acc = train_epoch(model, train_dl, optimizer)
-        vl_loss, vl_acc = eval_epoch(model, val_dl)
-
+    # ---- 5. Training loop ----
+    train_losses, val_losses = [], []
+    train_accs, val_accs = [], []
+    epochs_range = range(1, EPOCHS + 1)
+    for ep in epochs_range:
+        tr_loss, tr_acc = train_epoch(
+            MODEL, train_dl, optimizer, loss_criterion, PAD_ID
+        )
+        vl_loss, vl_acc = eval_epoch(MODEL, val_dl, loss_criterion, PAD_ID)
         train_losses.append(tr_loss)
         val_losses.append(vl_loss)
-        train_accuracies.append(tr_acc)
-        val_accuracies.append(vl_acc)
-
-        epoch_end_time = time.time()
-        epoch_duration_seconds = int(epoch_end_time - epoch_start_time)
-        epoch_minutes, epoch_seconds = divmod(epoch_duration_seconds, 60)
-
+        train_accs.append(tr_acc)
+        val_accs.append(vl_acc)
         print(
             f"Epoch {ep:02d}/{EPOCHS} │ "
-            f"train_loss={tr_loss:.4f} train_acc={tr_acc:.3f} │ "
-            f"val_loss={vl_loss:.4f} val_acc={vl_acc:.3f} │ "
-            f"Time: {epoch_minutes}m {epoch_seconds}s"
+            f"train_loss={tr_loss:.4f} acc={tr_acc:.3%} │ "
+            f"val_loss={vl_loss:.4f} acc={vl_acc:.3%}"
         )
 
-    # 5. Save
-    os.makedirs("models", exist_ok=True)
-    os.makedirs("logging", exist_ok=True)
+    # ---- 6. Save ----
+    MODELS_DIR = "models"
+    LOGGING_DIR = "logging"
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    os.makedirs(LOGGING_DIR, exist_ok=True)
     ts = datetime.datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
-    TS_MODEL_PATH = f"models/model_{ts}.pth"
-    LATEST_MODEL_PATH = "models/model_latest.pth"
-    torch.save(
-        {
-            "model_state": model.state_dict(),
-            "seq_len": SEQ_LEN,
-            "hidden_size": HIDDEN_SIZE,
-            "num_layers": NUM_LAYERS,
-            "num_classes": NUM_CLASSES,
-            "dropout": DROPOUT,
-            "vocab_size": VOCAB_SIZE,
-            "embedding_dim": EMBEDDING_DIM,
-        },
-        TS_MODEL_PATH,
-    )
-    torch.save(
-        {
-            "model_state": model.state_dict(),
-            "seq_len": SEQ_LEN,
-            "hidden_size": HIDDEN_SIZE,
-            "num_layers": NUM_LAYERS,
-            "num_classes": NUM_CLASSES,
-            "dropout": DROPOUT,
-            "vocab_size": VOCAB_SIZE,
-            "embedding_dim": EMBEDDING_DIM,
-        },
-        LATEST_MODEL_PATH,
-    )
 
-    # 6. plot loss & Accuracy
-    TS_METRICS_PATH = f"logging/metrics_{ts}.png"
-    LATEST_METRICS_PATH = "logging/metrics_latest.png"
+    # --- Save model (timestamped and latest) ---
+    model_save_path = os.path.join(MODELS_DIR, f"model-{ts}.pth")
+    latest_model_path = os.path.join(MODELS_DIR, "model_latest.pth")
+    save_dict = {
+        "model_state": MODEL.state_dict(),
+        "src_vocab": src_vocab,
+        "tgt_vocab": tgt_vocab,
+    }
+    torch.save(save_dict, model_save_path)
+    torch.save(save_dict, latest_model_path)
+    print(f"Model saved to {model_save_path} and {latest_model_path}")
+
+    # --- Save loss plot (timestamped and latest) ---
+    loss_plot_path = os.path.join(LOGGING_DIR, f"losses-{ts}.png")
+    latest_loss_plot_path = os.path.join(LOGGING_DIR, "latest_losses.png")
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
-    epochs_range = range(1, EPOCHS + 1)  # Corrected variable name
-    ax1.plot(epochs_range, train_losses, label="Train Loss")
-    ax1.plot(epochs_range, val_losses, label="Val Loss")
+    ax1.plot(epochs_range, train_losses, label="Training Loss")
+    ax1.plot(epochs_range, val_losses, label="Validation Loss")
     ax1.set_xlabel("Epoch")
     ax1.set_ylabel("Loss")
+    ax1.set_title("Training and Validation Loss")
     ax1.legend()
     ax1.grid(True)
-
-    ax2.plot(epochs_range, train_accuracies, label="Train Accuracy")
-    ax2.plot(epochs_range, val_accuracies, label="Val Accuracy")
+    ax2.plot(epochs_range, train_accs, label="Training Accuracy")
+    ax2.plot(epochs_range, val_accs, label="Validation Accuracy")
     ax2.set_xlabel("Epoch")
     ax2.set_ylabel("Accuracy")
     ax2.set_ylim(0, 1)
+    ax2.set_title("Training and Validation Accuracy")
     ax2.legend()
     ax2.grid(True)
-
-    # Add a title to the figure
-    script_name = os.path.basename(__file__)
-    fig.suptitle(
-        f"{script_name}\n{DATA_PATH}\nEpochs: {EPOCHS}",
-        fontsize=16,
-    )
-
-    plt.tight_layout(rect=[0, 0, 1, 0.96])  # Adjust layout to make space for suptitle
-    plt.savefig(TS_METRICS_PATH)
-    plt.savefig(LATEST_METRICS_PATH)
+    plt.tight_layout()
+    plt.savefig(loss_plot_path)
+    plt.savefig(latest_loss_plot_path)
     plt.close(fig)
+    print(f"Plots saved to {loss_plot_path} and {latest_loss_plot_path}")
 
-    # runtime
-    total_seconds = int(time.time() - start_time)
-    minutes, seconds = divmod(total_seconds, 60)
-    print(f"\nTotal runtime: {minutes}m {seconds}s")
-
-    # 7. Demo
-    print("\n--- Demo Inference ---")
-    if SEQ_LEN == 5:
-        demo_samples = [
-            [0, 2, 6, 3, 3],  # Expected target: (0+2+6+3+3) = 14
-            [7, 8, 4, 2, 9],  # Expected target: (7+8+4+2+9) = 30
-            [1, 7, 5, 4, 1],  # Expected target: (1+7+5+4+1) = 18
-        ]
-        for sample_features in demo_samples:
-            try:
-                prediction = infer(model, sample_features, SEQ_LEN)
-                print(f"Input: {sample_features} -> Predicted class: {prediction}")
-            except ValueError as e:
-                print(f"Error during demo prediction for {sample_features}: {e}")
-    else:
-        print(
-            f"Demo samples are for seq_len=5. Current seq_len is {SEQ_LEN}. Skipping demo."
-        )
+    # ---- 7. Demo ----
+    DEMO = "what is your name"
+    print("\nSRC :", DEMO)
+    print("PRED:", infer(MODEL, DEMO, src_vocab, tgt_vocab, inv_tgt_vocab))
