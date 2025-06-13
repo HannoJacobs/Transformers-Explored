@@ -14,8 +14,8 @@ from torch import optim
 from torch.utils.data import Dataset, DataLoader, random_split
 
 # FILE_NAME = "0_nano"
-FILE_NAME = "1_mini"
-# FILE_NAME = "2_full"
+# FILE_NAME = "1_mini"
+FILE_NAME = "2_full"
 DATA_PATH = f"Datasets/tiny_shakespeare_{FILE_NAME}.txt"
 
 BATCH_SIZE = 64
