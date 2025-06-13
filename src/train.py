@@ -10,12 +10,18 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import torch
 from torch import nn
+from torch.nn import (
+    TransformerEncoder,
+    TransformerEncoderLayer,
+    TransformerDecoder,
+    TransformerDecoderLayer,
+)
 from torch import optim
 from torch.utils.data import Dataset, DataLoader, random_split
 
-DATA_PATH = "Datasets/eng_afr/eng_afr_parallel_1000_rows.csv"
-# DATA_PATH = "Datasets/eng_afr/eng_afr_parallel_10000_rows.csv"
-# DATA_PATH = "Datasets/eng_afr/eng_afr_parallel_500000_rows.csv"
+# DATA_PATH = "Datasets/eng_afr/eng_afr_parallel_1000_rows.csv"
+DATA_PATH = "Datasets/eng_afr/eng_afr_parallel_10000_rows.csv"
+# DATA_PATH = "Datasets/eng_afr/eng_afr_parallel_100000_rows.csv"
 
 BATCH_SIZE = 64
 EPOCHS = 10
@@ -154,21 +160,32 @@ class TransformerModel(nn.Module):
         self.position_encode = PositionalEncoding(
             d_model=D_MODEL, dropout=DROPOUT, max_len=MAX_SEQ_LEN
         )
-        self.transformer = nn.Transformer(
+
+        # Separate encoder and decoder
+        enc_layer = TransformerEncoderLayer(
             d_model=D_MODEL,
             nhead=NHEAD,
-            num_encoder_layers=NUM_LAYERS,
-            num_decoder_layers=NUM_LAYERS,
             dim_feedforward=DIM_FEEDFORWARD,
             dropout=DROPOUT,
             batch_first=False,
         )
+        self.encoder = TransformerEncoder(enc_layer, num_layers=NUM_LAYERS)
+
+        dec_layer = TransformerDecoderLayer(
+            d_model=D_MODEL,
+            nhead=NHEAD,
+            dim_feedforward=DIM_FEEDFORWARD,
+            dropout=DROPOUT,
+            batch_first=False,
+        )
+        self.decoder = TransformerDecoder(dec_layer, num_layers=NUM_LAYERS)
+
         self.projection = nn.Linear(in_features=D_MODEL, out_features=len(target_vocab))
 
     def encode(self, src, src_pad):
         """Encodes the source sequence."""
         x = self.position_encode(self.source_embed(src) * math.sqrt(self.d_model))
-        return self.transformer.encoder(x, src_key_padding_mask=src_pad)
+        return self.encoder(x, src_key_padding_mask=src_pad)
 
     def decode(self, mem, src_pad, tgt_in, tgt_mask, tgt_pad):
         """
@@ -176,7 +193,7 @@ class TransformerModel(nn.Module):
         redundant encoder computation during inference.
         """
         y = self.position_encode(self.target_embed(tgt_in) * math.sqrt(self.d_model))
-        out = self.transformer.decoder(
+        out = self.decoder(
             tgt=y,
             memory=mem,
             tgt_mask=tgt_mask.to(y.device),
