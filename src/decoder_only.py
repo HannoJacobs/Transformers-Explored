@@ -13,10 +13,13 @@ from torch import nn
 from torch import optim
 from torch.utils.data import Dataset, DataLoader, random_split
 
-DATA_PATH = "Datasets/tiny_shakespeare_1_mini.txt"
+# FILE_NAME = "0_nano"
+FILE_NAME = "1_mini"
+# FILE_NAME = "2_full"
+DATA_PATH = f"Datasets/tiny_shakespeare_{FILE_NAME}.txt"
 
 BATCH_SIZE = 64
-EPOCHS = 5
+EPOCHS = 20
 LEARNING_RATE = 3e-4
 D_MODEL = 512
 NHEAD = 8
@@ -144,18 +147,21 @@ class TransformerModel(nn.Module):
             num_embeddings=len(vocab), embedding_dim=D_MODEL, padding_idx=0
         )
         self.position_encode = PositionalEncoding(
-            d_model=D_MODEL, dropout=DROPOUT, max_len=MAX_SEQ_LEN
+            d_model=D_MODEL, dropout=DROPOUT, max_len=MAX_GEN_LEN + 50
         )
 
-        # Decoder-only architecture - keep this!
-        dec_layer = nn.TransformerDecoderLayer(
+        # Use TransformerEncoder for a true decoder-only architecture
+        enc_layer = nn.TransformerEncoderLayer(
             d_model=D_MODEL,
             nhead=NHEAD,
             dim_feedforward=DIM_FEEDFORWARD,
             dropout=DROPOUT,
             batch_first=False,
+            norm_first=True,  # Recommended for stability
         )
-        self.decoder = nn.TransformerDecoder(dec_layer, num_layers=NUM_LAYERS)
+        self.transformer_encoder = nn.TransformerEncoder(
+            enc_layer, num_layers=NUM_LAYERS
+        )
         self.projection = nn.Linear(in_features=D_MODEL, out_features=len(vocab))
 
     def forward(self, x, attn_mask, key_pad_mask):
@@ -163,13 +169,11 @@ class TransformerModel(nn.Module):
         # Embed and add positional encoding
         x = self.position_encode(self.embed(x) * math.sqrt(self.d_model))
 
-        # Self-attention with causal mask (your original approach was fine)
-        out = self.decoder(
-            tgt=x,
-            memory=x,  # This is actually fine for decoder-only
-            tgt_mask=attn_mask.to(x.device),
-            tgt_key_padding_mask=key_pad_mask,
-            memory_key_padding_mask=key_pad_mask,
+        # Pass through TransformerEncoder with causal mask
+        out = self.transformer_encoder(
+            src=x,
+            mask=attn_mask.to(x.device),
+            src_key_padding_mask=key_pad_mask.to(x.device),
         )
         return self.projection(out)  # (T,B,V)
 
@@ -225,8 +229,8 @@ def eval_epoch(model, loader, loss_criterion_, pad_id):
     return tot_loss / tot_batches, tot_correct / tot_tok
 
 
-def infer(model, prompt, vocab, inv_vocab, max_len=100):
-    """Generates text using the trained model."""
+def infer(model, prompt, vocab, inv_vocab, max_len=100, temperature=0.8, top_k=20):
+    """Generates text using the trained model with temperature and top-k sampling."""
     model.eval()
     tokens = tokenize(prompt)
     token_ids = encode(tokens, vocab)
@@ -250,7 +254,15 @@ def infer(model, prompt, vocab, inv_vocab, max_len=100):
         # Get next token prediction
         with torch.no_grad():
             logits = model(x, attn_mask, key_pad_mask)
-            next_token_id = logits[-1, 0].argmax().item()
+
+            # Sample from the distribution
+            logits = logits[-1, 0] / temperature
+            if top_k > 0:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[-1]] = -float("Inf")
+
+            probs = torch.nn.functional.softmax(logits, dim=-1)
+            next_token_id = torch.multinomial(probs, num_samples=1).item()
 
         if next_token_id == vocab[EOS_TOKEN]:
             break
@@ -379,4 +391,7 @@ if __name__ == "__main__":
     # ---- 7. Demo ----
     DEMO = "We are accounted poor citizens, the patricians good."
     print("\nPROMPT:", DEMO)
-    print("GENERATED:", infer(MODEL, DEMO, vocab, inv_vocab))
+    print(
+        "GENERATED:",
+        infer(MODEL, DEMO, vocab, inv_vocab, max_len=50, top_k=10, temperature=0.8),
+    )
