@@ -230,7 +230,7 @@ def eval_epoch(model, loader, loss_criterion_, pad_id):
     return tot_loss / tot_batches, tot_correct / tot_tok
 
 
-def generate_text(model, prompt, vocab, inv_vocab, max_len=100):
+def infer(model, prompt, vocab, inv_vocab, max_len=100):
     """Generates text using the trained model."""
     model.eval()
     tokens = tokenize(prompt)
@@ -387,4 +387,4 @@ if __name__ == "__main__":
     # ---- 7. Demo ----
     DEMO = "We are accounted poor citizens, the patricians good."
     print("\nPROMPT:", DEMO)
-    print("GENERATED:", generate_text(MODEL, DEMO, vocab, inv_vocab))
+    print("GENERATED:", infer(MODEL, DEMO, vocab, inv_vocab))

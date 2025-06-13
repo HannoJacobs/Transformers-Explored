@@ -30,7 +30,7 @@ def load_model(ckpt_path: str):
 model, vocab, inv_vocab = load_model(MODEL_PATH)
 print("\n--- Text Generation ---")
 for text in INFER_TEXTS:
-    generated = generate_text(model, text, vocab, inv_vocab, max_len=50)
+    generated = infer(model, text, vocab, inv_vocab, max_len=50)
     print(f"PROMPT    : {text}")
     print(f"GENERATED : {generated}")
     print("-" * 50)
