@@ -1,4 +1,4 @@
-"""Seq 2 Seq Transformer Model"""
+"""Autoregressive Decoder-Only Transformer Model"""
 
 # pylint: disable=C3001,R0914,R0913,R0917
 import os
@@ -7,18 +7,16 @@ import math
 import datetime
 import time
 
-import pandas as pd
 import matplotlib.pyplot as plt
 import torch
 from torch import nn
 from torch import optim
 from torch.utils.data import Dataset, DataLoader, random_split
 
-NUM_ROWS = 100
-DATA_PATH = f"Datasets/eng_afr/eng_afr_{NUM_ROWS}_rows.csv"
+DATA_PATH = "Datasets/tiny_shakespeare_2_nano.txt"
 
 BATCH_SIZE = 64
-EPOCHS = 10
+EPOCHS = 3
 LEARNING_RATE = 3e-4
 D_MODEL = 512
 NHEAD = 8
@@ -38,16 +36,22 @@ print(f"🖥️  device = {DEVICE}")
 
 
 def tokenize(text: str) -> list[str]:
-    """Simple word/punctuation tokenizer."""
-    _word_re = re.compile(r"\w+|[^\w\s]", re.UNICODE)
-    return _word_re.findall(text.lower())
+    """Word-level tokenizer that separates punctuation."""
+    # Split on whitespace first, then separate punctuation
+    words = text.split()
+    tokens = []
+    for word in words:
+        # Find word characters and punctuation
+        parts = re.findall(r"\w+|[^\w\s]", word)
+        tokens.extend(parts)
+    return [token.lower() for token in tokens]
 
 
 def build_vocab(texts: list[str], min_freq: int = 1) -> tuple[dict, dict]:
     """Builds vocab and inverse vocab from texts, filtering by min_freq."""
     frequency: dict[str, int] = {}
-    for line in texts:
-        for tok in tokenize(line):
+    for text in texts:
+        for tok in tokenize(text):
             frequency[tok] = frequency.get(tok, 0) + 1
     vocab = {PAD_TOKEN: 0, UNK_TOKEN: 1, BOS_TOKEN: 2, EOS_TOKEN: 3}
     for tok in sorted(frequency):
@@ -63,60 +67,56 @@ def encode(tokens: list[str], vocab: dict) -> list[int]:
     return [vocab.get(t, unk) for t in tokens]
 
 
-class TranslationDataset(Dataset):
+class TextDataset(Dataset):
     """
-    (src_ids, tgt_ids) without BOS/EOS/PAD, truncated
-    to INPUT_MAX_SEQ_LEN and OUTPUT_MAX_SEQ_LEN
+    Dataset for autoregressive language modeling.
+    Returns sequences of token IDs for next token prediction.
     """
 
-    def __init__(self, df: pd.DataFrame, source_vocab: dict, target_vocab: dict):
-        self.data = []
-        for src_sentence, tgt_sentence in zip(df["src"], df["target"]):
-            src_tokens = tokenize(src_sentence)
-            tgt_tokens = tokenize(tgt_sentence)
-            src_tokens_encoded = encode(src_tokens[:INPUT_MAX_SEQ_LEN], source_vocab)
-            tgt_tokens_encoded = encode(tgt_tokens[:OUTPUT_MAX_SEQ_LEN], target_vocab)
-            if src_tokens_encoded and tgt_tokens_encoded:
-                self.data.append((src_tokens_encoded, tgt_tokens_encoded))
+    def __init__(self, text: str, vocab: dict, seq_len: int):
+        self.seq_len = seq_len
+        tokens = tokenize(text)
+        self.token_ids = encode(tokens, vocab)
+
+        # Create overlapping sequences
+        self.sequences = []
+        for i in range(0, len(self.token_ids) - seq_len, seq_len // 2):  # 50% overlap
+            if i + seq_len < len(self.token_ids):
+                self.sequences.append(
+                    self.token_ids[i : i + seq_len + 1]
+                )  # +1 for target
 
     def __len__(self):
-        return len(self.data)
+        return len(self.sequences)
 
     def __getitem__(self, idx):
-        return self.data[idx]
+        seq = self.sequences[idx]
+        return seq[:-1], seq[1:]  # input: [0:n-1], target: [1:n]
 
 
-def collate(batch, src_pad_id, tgt_pad_id, tgt_bos_id, tgt_eos_id):
+def collate(batch, pad_id):
     """
-    Pads and builds:
-    src         (S,B)
-    src_pad     (B,S)  bool
-    tgt_in/out  (T,B)
-    tgt_mask    (T,T)  float  0 / -1e9   <- causal
-    tgt_pad     (B,T)  bool
+    Pads sequences and creates causal mask for autoregressive training.
     """
-    src_seqs, tgt_seqs = zip(*batch)
-    S = max(len(s) for s in src_seqs)
-    T = max(len(t) for t in tgt_seqs) + 1  # +1 for BOS/EOS
+    inputs, targets = zip(*batch)
+    seq_len = max(len(seq) for seq in inputs)
 
-    src = torch.full((S, len(batch)), src_pad_id, dtype=torch.long)
-    tgt_in = torch.full((T, len(batch)), tgt_pad_id, dtype=torch.long)
-    tgt_out = torch.full((T, len(batch)), tgt_pad_id, dtype=torch.long)
+    # Pad sequences
+    input_batch = torch.full((seq_len, len(batch)), pad_id, dtype=torch.long)
+    target_batch = torch.full((seq_len, len(batch)), pad_id, dtype=torch.long)
 
-    for i, (s, t) in enumerate(zip(src_seqs, tgt_seqs)):
-        src[: len(s), i] = torch.tensor(s)
-        tin = [tgt_bos_id] + t
-        tout = t + [tgt_eos_id]
-        tgt_in[: len(tin), i] = torch.tensor(tin)
-        tgt_out[: len(tout), i] = torch.tensor(tout)
+    for i, (inp, tgt) in enumerate(zip(inputs, targets)):
+        input_batch[: len(inp), i] = torch.tensor(inp)
+        target_batch[: len(tgt), i] = torch.tensor(tgt)
 
-    src_key_pad = (src == src_pad_id).T  # (B,S)
-    tgt_key_pad = (tgt_in == tgt_pad_id).T  # (B,T)
+    # Create attention mask (causal)
+    attn_mask = torch.triu(torch.full((seq_len, seq_len), MASK_VAL), diagonal=1)
+    attn_mask.fill_diagonal_(0.0)
 
-    # ---- additive causal mask (float) ----
-    tgt_mask = torch.triu(torch.full((T, T), MASK_VAL), diagonal=1)
-    tgt_mask.fill_diagonal_(0.0)  # diag = 0
-    return src, src_key_pad, tgt_in, tgt_out, tgt_mask.float(), tgt_key_pad
+    # Create padding mask
+    key_pad_mask = (input_batch == pad_id).T  # (B, T)
+
+    return input_batch, target_batch, attn_mask.float(), key_pad_mask
 
 
 class PositionalEncoding(nn.Module):
@@ -140,31 +140,19 @@ class PositionalEncoding(nn.Module):
 
 
 class TransformerModel(nn.Module):
-    """A standard Transformer model for sequence-to-sequence tasks."""
+    """A decoder-only Transformer model for autoregressive language modeling."""
 
-    def __init__(self, source_vocab, target_vocab):
+    def __init__(self, vocab):
         super().__init__()
         self.d_model = D_MODEL
-        self.source_embed = nn.Embedding(
-            num_embeddings=len(source_vocab), embedding_dim=D_MODEL, padding_idx=0
-        )
-        self.target_embed = nn.Embedding(
-            num_embeddings=len(target_vocab), embedding_dim=D_MODEL, padding_idx=0
+        self.embed = nn.Embedding(
+            num_embeddings=len(vocab), embedding_dim=D_MODEL, padding_idx=0
         )
         self.position_encode = PositionalEncoding(
             d_model=D_MODEL, dropout=DROPOUT, max_len=MAX_SEQ_LEN
         )
 
-        # Separate encoder and decoder
-        enc_layer = nn.TransformerEncoderLayer(
-            d_model=D_MODEL,
-            nhead=NHEAD,
-            dim_feedforward=DIM_FEEDFORWARD,
-            dropout=DROPOUT,
-            batch_first=False,
-        )
-        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=NUM_LAYERS)
-
+        # Decoder-only architecture
         dec_layer = nn.TransformerDecoderLayer(
             d_model=D_MODEL,
             nhead=NHEAD,
@@ -173,33 +161,22 @@ class TransformerModel(nn.Module):
             batch_first=False,
         )
         self.decoder = nn.TransformerDecoder(dec_layer, num_layers=NUM_LAYERS)
+        self.projection = nn.Linear(in_features=D_MODEL, out_features=len(vocab))
 
-        self.projection = nn.Linear(in_features=D_MODEL, out_features=len(target_vocab))
+    def forward(self, x, attn_mask, key_pad_mask):
+        """Forward pass for the decoder-only model."""
+        # Embed and add positional encoding
+        x = self.position_encode(self.embed(x) * math.sqrt(self.d_model))
 
-    def encode(self, src, src_pad):
-        """Encodes the source sequence."""
-        x = self.position_encode(self.source_embed(src) * math.sqrt(self.d_model))
-        return self.encoder(x, src_key_padding_mask=src_pad)
-
-    def decode(self, mem, src_pad, tgt_in, tgt_mask, tgt_pad):
-        """
-        Decoder forward pass that reuses cached `mem` to avoid
-        redundant encoder computation during inference.
-        """
-        y = self.position_encode(self.target_embed(tgt_in) * math.sqrt(self.d_model))
+        # Self-attention with causal mask (decoder attending to itself)
         out = self.decoder(
-            tgt=y,
-            memory=mem,
-            tgt_mask=tgt_mask.to(y.device),
-            tgt_key_padding_mask=tgt_pad,
-            memory_key_padding_mask=src_pad,
+            tgt=x,
+            memory=x,  # Use same sequence as memory for self-attention
+            tgt_mask=attn_mask.to(x.device),
+            tgt_key_padding_mask=key_pad_mask,
+            memory_key_padding_mask=key_pad_mask,
         )
         return self.projection(out)  # (T,B,V)
-
-    def forward(self, src, src_pad, tgt_in, tgt_mask, tgt_pad):
-        """Forward pass for the Transformer model."""
-        mem = self.encode(src, src_pad)
-        return self.decode(mem, src_pad, tgt_in, tgt_mask, tgt_pad)
 
 
 def train_epoch(model, loader, optimizer_, loss_criterion_, pad_id):
@@ -207,14 +184,13 @@ def train_epoch(model, loader, optimizer_, loss_criterion_, pad_id):
     model.train()
     tot_loss = tot_batches = 0
     tot_tok = tot_correct = 0
-    for src, src_pad, tgt_in, tgt_out, tgt_mask, tgt_pad in loader:
-        src, src_pad = src.to(DEVICE), src_pad.to(DEVICE)
-        tgt_in, tgt_out = tgt_in.to(DEVICE), tgt_out.to(DEVICE)
-        tgt_mask, tgt_pad = tgt_mask.to(DEVICE), tgt_pad.to(DEVICE)
+    for inputs, targets, attn_mask, key_pad_mask in loader:
+        inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
+        attn_mask, key_pad_mask = attn_mask.to(DEVICE), key_pad_mask.to(DEVICE)
 
         optimizer_.zero_grad()
-        logits = model(src, src_pad, tgt_in, tgt_mask, tgt_pad)
-        loss = loss_criterion_(logits.reshape(-1, logits.size(-1)), tgt_out.reshape(-1))
+        logits = model(inputs, attn_mask, key_pad_mask)
+        loss = loss_criterion_(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer_.step()
@@ -222,8 +198,8 @@ def train_epoch(model, loader, optimizer_, loss_criterion_, pad_id):
         # ---- accuracy (token level, ignores PAD) ----
         with torch.no_grad():
             pred = logits.argmax(-1)
-            mask = tgt_out.ne(pad_id)
-            tot_correct += (pred.eq(tgt_out) & mask).sum().item()
+            mask = targets.ne(pad_id)
+            tot_correct += (pred.eq(targets) & mask).sum().item()
             tot_tok += mask.sum().item()
 
         tot_loss += loss.item()
@@ -237,17 +213,16 @@ def eval_epoch(model, loader, loss_criterion_, pad_id):
     model.eval()
     tot_loss = tot_batches = 0
     tot_tok = tot_correct = 0
-    for src, src_pad, tgt_in, tgt_out, tgt_mask, tgt_pad in loader:
-        src, src_pad = src.to(DEVICE), src_pad.to(DEVICE)
-        tgt_in, tgt_out = tgt_in.to(DEVICE), tgt_out.to(DEVICE)
-        tgt_mask, tgt_pad = tgt_mask.to(DEVICE), tgt_pad.to(DEVICE)
+    for inputs, targets, attn_mask, key_pad_mask in loader:
+        inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
+        attn_mask, key_pad_mask = attn_mask.to(DEVICE), key_pad_mask.to(DEVICE)
 
-        logits = model(src, src_pad, tgt_in, tgt_mask, tgt_pad)
-        loss = loss_criterion_(logits.reshape(-1, logits.size(-1)), tgt_out.reshape(-1))
+        logits = model(inputs, attn_mask, key_pad_mask)
+        loss = loss_criterion_(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
 
         pred = logits.argmax(-1)
-        mask = tgt_out.ne(pad_id)
-        tot_correct += (pred.eq(tgt_out) & mask).sum().item()
+        mask = targets.ne(pad_id)
+        tot_correct += (pred.eq(targets) & mask).sum().item()
         tot_tok += mask.sum().item()
 
         tot_loss += loss.item()
@@ -255,73 +230,74 @@ def eval_epoch(model, loader, loss_criterion_, pad_id):
     return tot_loss / tot_batches, tot_correct / tot_tok
 
 
-def infer(model, sentence, source_vocab, target_vocab, inv_target_vocab):
-    """Translates a source sentence using the trained model."""
+def generate_text(model, prompt, vocab, inv_vocab, max_len=100):
+    """Generates text using the trained model."""
     model.eval()
-    src_ids = encode(tokenize(sentence)[:INPUT_MAX_SEQ_LEN], source_vocab)
-    src = torch.tensor(src_ids, device=DEVICE).unsqueeze(1)  # (S,1)
-    src_pad = (src == source_vocab[PAD_TOKEN]).T  # (1,S)
-    mem = model.encode(src, src_pad)  # cache encoder output once
+    tokens = tokenize(prompt)
+    token_ids = encode(tokens, vocab)
 
-    tgt_ids = [target_vocab[BOS_TOKEN]]
-    for _ in range(MAX_GEN_LEN):
-        if len(tgt_ids) - 1 >= OUTPUT_MAX_SEQ_LEN:
+    # Add BOS token if not present
+    if not token_ids or token_ids[0] != vocab[BOS_TOKEN]:
+        token_ids = [vocab[BOS_TOKEN]] + token_ids
+
+    for _ in range(max_len):
+        if len(token_ids) >= INPUT_MAX_SEQ_LEN:
             break
-        tgt = torch.tensor(tgt_ids, device=DEVICE).unsqueeze(1)  # (T,1)
-        tgt_pad = (tgt == target_vocab[PAD_TOKEN]).T
-        tgt_mask = torch.triu(
-            torch.full((tgt.size(0), tgt.size(0)), MASK_VAL, device=DEVICE), diagonal=1
+
+        # Prepare input
+        x = torch.tensor(token_ids, device=DEVICE).unsqueeze(1)  # (T, 1)
+        seq_len = x.size(0)
+
+        # Create masks
+        attn_mask = torch.triu(
+            torch.full((seq_len, seq_len), MASK_VAL, device=DEVICE), diagonal=1
         )
-        tgt_mask.fill_diagonal_(0.0)
-        out = model.decode(mem, src_pad, tgt, tgt_mask, tgt_pad)  # <-- reuse `mem`
-        next_id = out[-1, 0].argmax().item()
-        if next_id == target_vocab[EOS_TOKEN]:
-            break
-        tgt_ids.append(next_id)
+        attn_mask.fill_diagonal_(0.0)
+        key_pad_mask = torch.zeros(1, seq_len, dtype=torch.bool, device=DEVICE)
 
-    words = [inv_target_vocab.get(i, UNK_TOKEN) for i in tgt_ids[1:]]
-    sent = []
-    for w in words:
-        if sent and w.isalnum():
-            sent.append(" ")
-        sent.append(w)
-    return "".join(sent)
+        # Get next token prediction
+        with torch.no_grad():
+            logits = model(x, attn_mask, key_pad_mask)
+            next_token_id = logits[-1, 0].argmax().item()
+
+        if next_token_id == vocab[EOS_TOKEN]:
+            break
+
+        token_ids.append(next_token_id)
+
+    # Convert back to text
+    words = [inv_vocab.get(i, UNK_TOKEN) for i in token_ids[1:]]  # Skip BOS
+    return " ".join(words)
 
 
 if __name__ == "__main__":
     start_time = time.time()
     # ---- 1. Load data ----
-    DF = pd.read_csv(DATA_PATH)
-    print(f"Loaded {len(DF):,} sentence pairs")
+    with open(DATA_PATH, "r", encoding="utf-8") as f:
+        text_data = f.read()
+    print(f"Loaded text with {len(text_data):,} characters")
 
     # ---- 2. Vocab ----
-    src_vocab, inv_src_vocab = build_vocab(DF["src"], MIN_FREQ)
-    tgt_vocab, inv_tgt_vocab = build_vocab(DF["target"], MIN_FREQ)
-    print(f"Src vocab: {len(src_vocab):,} | Tgt vocab: {len(tgt_vocab):,}")
-    PAD_ID = tgt_vocab[PAD_TOKEN]
+    vocab, inv_vocab = build_vocab([text_data], MIN_FREQ)
+    print(f"Vocab size: {len(vocab):,}")
+    PAD_ID = vocab[PAD_TOKEN]
 
     # ---- 3. Dataset / DataLoader ----
-    full_ds = TranslationDataset(DF, src_vocab, tgt_vocab)
+    full_ds = TextDataset(text_data, vocab, INPUT_MAX_SEQ_LEN)
     TRAIN_SZ = int(0.9 * len(full_ds))
     train_ds, val_ds = random_split(
         full_ds,
         [TRAIN_SZ, len(full_ds) - TRAIN_SZ],
         generator=torch.Generator().manual_seed(42),
     )
-    collate_func = lambda b: collate(
-        b,
-        src_pad_id=src_vocab[PAD_TOKEN],
-        tgt_pad_id=tgt_vocab[PAD_TOKEN],
-        tgt_bos_id=tgt_vocab[BOS_TOKEN],
-        tgt_eos_id=tgt_vocab[EOS_TOKEN],
-    )
+    collate_func = lambda b: collate(b, pad_id=vocab[PAD_TOKEN])
     train_dl = DataLoader(train_ds, BATCH_SIZE, shuffle=True, collate_fn=collate_func)
     val_dl = DataLoader(val_ds, BATCH_SIZE, shuffle=False, collate_fn=collate_func)
 
     # ---- 4. Model / Optim / Loss ----
-    MODEL = TransformerModel(src_vocab, tgt_vocab).to(DEVICE)
+    MODEL = TransformerModel(vocab).to(DEVICE)
     optimizer = optim.Adam(MODEL.parameters(), lr=LEARNING_RATE)
-    loss_criterion = nn.CrossEntropyLoss(ignore_index=tgt_vocab[PAD_TOKEN])
+    loss_criterion = nn.CrossEntropyLoss(ignore_index=vocab[PAD_TOKEN])
 
     # ---- 5. Training loop ----
     train_losses, val_losses = [], []
@@ -343,6 +319,7 @@ if __name__ == "__main__":
         )
 
     # ---- 6. Save ----
+    print("\n")
     MODELS_DIR = "models"
     LOGGING_DIR = "logging"
     os.makedirs(MODELS_DIR, exist_ok=True)
@@ -358,8 +335,7 @@ if __name__ == "__main__":
     latest_model_path = os.path.join(MODELS_DIR, f"{filename_base}_latest.pth")
     save_dict = {
         "model_state": MODEL.state_dict(),
-        "src_vocab": src_vocab,
-        "tgt_vocab": tgt_vocab,
+        "vocab": vocab,
     }
     torch.save(save_dict, model_save_path)
     torch.save(save_dict, latest_model_path)
@@ -409,6 +385,6 @@ if __name__ == "__main__":
     print(f"\nTotal runtime: {minutes}m {seconds}s")
 
     # ---- 7. Demo ----
-    DEMO = "what is your name"
-    print("\nSRC :", DEMO)
-    print("PRED:", infer(MODEL, DEMO, src_vocab, tgt_vocab, inv_tgt_vocab))
+    DEMO = "We are accounted poor citizens, the patricians good."
+    print("\nPROMPT:", DEMO)
+    print("GENERATED:", generate_text(MODEL, DEMO, vocab, inv_vocab))
