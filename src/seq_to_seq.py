@@ -14,12 +14,12 @@ from torch import nn
 from torch import optim
 from torch.utils.data import Dataset, DataLoader, random_split
 
-# NUM_ROWS = "full"
-NUM_ROWS = 100
+NUM_ROWS = "full"
+# NUM_ROWS = 100
 DATA_PATH = f"Datasets/eng_afr/eng_afr_{NUM_ROWS}_rows.csv"
 
 BATCH_SIZE = 64
-EPOCHS = 3
+EPOCHS = 10
 LEARNING_RATE = 3e-4
 D_MODEL = 512
 NHEAD = 8
