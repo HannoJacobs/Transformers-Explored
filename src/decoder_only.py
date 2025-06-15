@@ -306,6 +306,7 @@ if __name__ == "__main__":
     # ---- 5. Training loop ----
     train_losses, val_losses = [], []
     train_accs, val_accs = [], []
+    train_perplexities, val_perplexities = [], []
     epochs_range = range(1, EPOCHS + 1)
     for ep in epochs_range:
         epoch_start_time = time.time()
@@ -318,14 +319,19 @@ if __name__ == "__main__":
         train_accs.append(tr_acc)
         val_accs.append(vl_acc)
 
+        tr_ppl = math.exp(tr_loss)
+        vl_ppl = math.exp(vl_loss)
+        train_perplexities.append(tr_ppl)
+        val_perplexities.append(vl_ppl)
+
         epoch_end_time = time.time()
         epoch_minutes, epoch_seconds = divmod(
             int(epoch_end_time - epoch_start_time), 60
         )
         print(
             f"Epoch {ep:02d}/{EPOCHS} │ "
-            f"train_loss={tr_loss:.3f} acc={tr_acc:.2%} │ "
-            f"val_loss={vl_loss:.3f} acc={vl_acc:.2%} │ "
+            f"train_loss={tr_loss:.3f} acc={tr_acc:.2%} ppl={tr_ppl:.1f} │ "
+            f"val_loss={vl_loss:.3f} acc={vl_acc:.2%} ppl={vl_ppl:.1f} │ "
             f"Time: {epoch_minutes}m {epoch_seconds}s"
         )
 
@@ -358,7 +364,7 @@ if __name__ == "__main__":
         LOGGING_DIR, f"{filename_base}_losses_latest.png"
     )
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(21, 5))
 
     # Add a title to the figure
     fig.suptitle(
@@ -383,6 +389,14 @@ if __name__ == "__main__":
     ax2.set_title("Training and Validation Accuracy")
     ax2.legend()
     ax2.grid(True)
+
+    ax3.plot(epochs_range, train_perplexities, label="Training Perplexity")
+    ax3.plot(epochs_range, val_perplexities, label="Validation Perplexity")
+    ax3.set_xlabel("Epoch")
+    ax3.set_ylabel("Perplexity")
+    ax3.set_title("Training and Validation Perplexity")
+    ax3.legend()
+    ax3.grid(True)
 
     plt.tight_layout(rect=[0, 0, 1, 0.92])
     plt.savefig(loss_plot_path)
