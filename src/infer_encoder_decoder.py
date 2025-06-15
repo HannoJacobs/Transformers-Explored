@@ -4,9 +4,9 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
-from src.seq_to_seq import *
+from src.encoder_decoder import *
 
-MODEL_PATH = "models/seq_to_seq_latest.pth"
+MODEL_PATH = "models/encoder_decoder_latest.pth"
 INFER_TEXTS = [
     "what is a sentence",
     "what is your name",
