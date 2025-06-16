@@ -2,6 +2,7 @@
 
 # pylint: disable=C3001,R0914,R0913,R0917
 import os
+import sys
 import re
 import math
 import datetime
@@ -13,6 +14,9 @@ import torch
 from torch import nn
 from torch import optim
 from torch.utils.data import Dataset, DataLoader, random_split
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
+from src.mha import MHA  # pylint: disable=C0413
 
 # NUM_ROWS = "full"
 NUM_ROWS = 10000
@@ -140,6 +144,84 @@ class PositionalEncoding(nn.Module):
         return self.drop(x + self.pe[: x.size(0)])
 
 
+class CustomEncoderLayer(nn.Module):
+    """Custom Transformer Encoder Layer using nn.MultiheadAttention."""
+
+    def __init__(self, d_model, nhead, dim_feedforward, dropout):
+        super().__init__()
+        self.self_attn = MHA(embed_dim=d_model, num_heads=nhead, dropout=dropout)
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.activation = nn.ReLU()
+
+    def forward(self, src, src_key_padding_mask):
+        # Self-attention block
+        src2 = self.self_attn(
+            src, src, src, key_padding_mask=src_key_padding_mask, need_weights=False
+        )[0]
+        src = src + self.dropout1(src2)
+        src = self.norm1(src)
+        # Feed-forward block
+        src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
+        src = src + self.dropout2(src2)
+        src = self.norm2(src)
+        return src
+
+
+class CustomDecoderLayer(nn.Module):
+    """Custom Transformer Decoder Layer using nn.MultiheadAttention."""
+
+    def __init__(self, d_model, nhead, dim_feedforward, dropout):
+        super().__init__()
+        self.self_attn = MHA(embed_dim=d_model, num_heads=nhead, dropout=dropout)
+        self.multihead_attn = MHA(embed_dim=d_model, num_heads=nhead, dropout=dropout)
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.norm3 = nn.LayerNorm(d_model)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.dropout3 = nn.Dropout(dropout)
+        self.activation = nn.ReLU()
+
+    def forward(
+        self, tgt, memory, tgt_mask, tgt_key_padding_mask, memory_key_padding_mask
+    ):
+        # Masked self-attention block
+        tgt2 = self.self_attn(
+            tgt,
+            tgt,
+            tgt,
+            attn_mask=tgt_mask,
+            key_padding_mask=tgt_key_padding_mask,
+            need_weights=False,
+        )[0]
+        tgt = tgt + self.dropout1(tgt2)
+        tgt = self.norm1(tgt)
+        # Cross-attention block
+        tgt2 = self.multihead_attn(
+            tgt,
+            memory,
+            memory,
+            key_padding_mask=memory_key_padding_mask,
+            need_weights=False,
+        )[0]
+        tgt = tgt + self.dropout2(tgt2)
+        tgt = self.norm2(tgt)
+        # Feed-forward block
+        tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt))))
+        tgt = tgt + self.dropout3(tgt2)
+        tgt = self.norm3(tgt)
+        return tgt
+
+
 class TransformerModel(nn.Module):
     """A standard Transformer model for sequence-to-sequence tasks."""
 
@@ -156,31 +238,38 @@ class TransformerModel(nn.Module):
             d_model=D_MODEL, dropout=DROPOUT, max_len=MAX_SEQ_LEN
         )
 
-        # Separate encoder and decoder
-        enc_layer = nn.TransformerEncoderLayer(
-            d_model=D_MODEL,
-            nhead=NHEAD,
-            dim_feedforward=DIM_FEEDFORWARD,
-            dropout=DROPOUT,
-            batch_first=False,
+        # MHA-based Encoder and Decoder Layers
+        self.encoder_layers = nn.ModuleList(
+            [
+                CustomEncoderLayer(
+                    d_model=D_MODEL,
+                    nhead=NHEAD,
+                    dim_feedforward=DIM_FEEDFORWARD,
+                    dropout=DROPOUT,
+                )
+                for _ in range(NUM_LAYERS)
+            ]
         )
-        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=NUM_LAYERS)
-
-        dec_layer = nn.TransformerDecoderLayer(
-            d_model=D_MODEL,
-            nhead=NHEAD,
-            dim_feedforward=DIM_FEEDFORWARD,
-            dropout=DROPOUT,
-            batch_first=False,
+        self.decoder_layers = nn.ModuleList(
+            [
+                CustomDecoderLayer(
+                    d_model=D_MODEL,
+                    nhead=NHEAD,
+                    dim_feedforward=DIM_FEEDFORWARD,
+                    dropout=DROPOUT,
+                )
+                for _ in range(NUM_LAYERS)
+            ]
         )
-        self.decoder = nn.TransformerDecoder(dec_layer, num_layers=NUM_LAYERS)
 
         self.projection = nn.Linear(in_features=D_MODEL, out_features=len(target_vocab))
 
     def encode(self, src, src_pad):
         """Encodes the source sequence."""
         x = self.position_encode(self.source_embed(src) * math.sqrt(self.d_model))
-        return self.encoder(x, src_key_padding_mask=src_pad)
+        for layer in self.encoder_layers:
+            x = layer(x, src_key_padding_mask=src_pad)
+        return x
 
     def decode(self, mem, src_pad, tgt_in, tgt_mask, tgt_pad):
         """
@@ -188,13 +277,15 @@ class TransformerModel(nn.Module):
         redundant encoder computation during inference.
         """
         y = self.position_encode(self.target_embed(tgt_in) * math.sqrt(self.d_model))
-        out = self.decoder(
-            tgt=y,
-            memory=mem,
-            tgt_mask=tgt_mask.to(y.device),
-            tgt_key_padding_mask=tgt_pad,
-            memory_key_padding_mask=src_pad,
-        )
+        out = y
+        for layer in self.decoder_layers:
+            out = layer(
+                out,
+                mem,
+                tgt_mask=tgt_mask.to(y.device),
+                tgt_key_padding_mask=tgt_pad,
+                memory_key_padding_mask=src_pad,
+            )
         return self.projection(out)  # (T,B,V)
 
     def forward(self, src, src_pad, tgt_in, tgt_mask, tgt_pad):
