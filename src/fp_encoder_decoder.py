@@ -2,6 +2,7 @@
 
 # pylint: disable=C3001,R0914,R0913,R0917
 import os
+import sys
 import re
 import math
 import datetime
@@ -13,6 +14,9 @@ import torch
 from torch import nn
 from torch import optim
 from torch.utils.data import Dataset, DataLoader, random_split
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
+from src.mha import MHA  # pylint: disable=C0413
 
 # NUM_ROWS = "full"
 NUM_ROWS = 10000
@@ -145,9 +149,7 @@ class CustomEncoderLayer(nn.Module):
 
     def __init__(self, d_model, nhead, dim_feedforward, dropout):
         super().__init__()
-        self.self_attn = nn.MultiheadAttention(
-            d_model, nhead, dropout=dropout, batch_first=False
-        )
+        self.self_attn = MHA(embed_dim=d_model, num_heads=nhead, dropout=dropout)
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(dim_feedforward, d_model)
@@ -176,12 +178,8 @@ class CustomDecoderLayer(nn.Module):
 
     def __init__(self, d_model, nhead, dim_feedforward, dropout):
         super().__init__()
-        self.self_attn = nn.MultiheadAttention(
-            d_model, nhead, dropout=dropout, batch_first=False
-        )
-        self.multihead_attn = nn.MultiheadAttention(
-            d_model, nhead, dropout=dropout, batch_first=False
-        )
+        self.self_attn = MHA(embed_dim=d_model, num_heads=nhead, dropout=dropout)
+        self.multihead_attn = MHA(embed_dim=d_model, num_heads=nhead, dropout=dropout)
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(dim_feedforward, d_model)

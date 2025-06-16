@@ -2,6 +2,7 @@
 
 # pylint: disable=C3001,R0914,R0913,R0917
 import os
+import sys
 import re
 import math
 import datetime
@@ -12,6 +13,9 @@ import torch
 from torch import nn
 from torch import optim
 from torch.utils.data import Dataset, DataLoader, random_split
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
+from src.mha import MHA  # pylint: disable=C0413
 
 # FILE_NAME = "0_nano"
 # FILE_NAME = "1_mini"
@@ -142,11 +146,10 @@ class CustomDecoderLayer(nn.Module):
 
     def __init__(self, d_model, nhead, dim_feedforward, dropout):
         super().__init__()
-        self.self_attn = nn.MultiheadAttention(
+        self.self_attn = MHA(
             embed_dim=d_model,
             num_heads=nhead,
             dropout=dropout,
-            batch_first=False,  # Input shape is (L, B, E)
         )
         # Feedforward Network
         self.linear1 = nn.Linear(d_model, dim_feedforward)
