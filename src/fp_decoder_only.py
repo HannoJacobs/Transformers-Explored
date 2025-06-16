@@ -137,6 +137,51 @@ class PositionalEncoding(nn.Module):
         return self.drop(x + self.pe[: x.size(0)])
 
 
+class CustomDecoderLayer(nn.Module):
+    """Custom Transformer Decoder Layer using nn.MultiheadAttention (pre-norm)."""
+
+    def __init__(self, d_model, nhead, dim_feedforward, dropout):
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=d_model,
+            num_heads=nhead,
+            dropout=dropout,
+            batch_first=False,  # Input shape is (L, B, E)
+        )
+        # Feedforward Network
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+
+        # Normalization and Dropout layers
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.activation = nn.ReLU()
+
+    def forward(self, src, src_mask=None, src_key_padding_mask=None):
+        """Forward pass for the custom decoder layer (pre-norm)."""
+        x = src
+        # Self-attention block with pre-normalization
+        norm_x = self.norm1(x)
+        attn_output, _ = self.self_attn(
+            query=norm_x,
+            key=norm_x,
+            value=norm_x,
+            attn_mask=src_mask,
+            key_padding_mask=src_key_padding_mask,
+            need_weights=False,  # More efficient if weights are not needed
+        )
+        x = x + self.dropout1(attn_output)
+
+        # Feedforward block with pre-normalization
+        norm_x_ff = self.norm2(x)
+        ff_output = self.linear2(self.dropout(self.activation(self.linear1(norm_x_ff))))
+        x = x + self.dropout2(ff_output)
+        return x
+
+
 class TransformerModel(nn.Module):
     """A decoder-only Transformer model for autoregressive language modeling."""
 
@@ -150,16 +195,19 @@ class TransformerModel(nn.Module):
             d_model=D_MODEL, dropout=DROPOUT, max_len=MAX_GEN_LEN + 50
         )
 
-        # Use TransformerEncoder for a true decoder-only architecture
-        enc_layer = nn.TransformerEncoderLayer(
-            d_model=D_MODEL,
-            nhead=NHEAD,
-            dim_feedforward=DIM_FEEDFORWARD,
-            dropout=DROPOUT,
-            batch_first=False,
-            norm_first=True,
+        # Create a stack of custom decoder layers
+        self.decoder_layers = nn.ModuleList(
+            [
+                CustomDecoderLayer(
+                    d_model=D_MODEL,
+                    nhead=NHEAD,
+                    dim_feedforward=DIM_FEEDFORWARD,
+                    dropout=DROPOUT,
+                )
+                for _ in range(NUM_LAYERS)
+            ]
         )
-        self.decoder = nn.TransformerEncoder(enc_layer, num_layers=NUM_LAYERS)
+        self.final_norm = nn.LayerNorm(D_MODEL)  # Final normalization
         self.projection = nn.Linear(in_features=D_MODEL, out_features=len(vocab))
 
     def forward(self, x, attn_mask, key_pad_mask):
@@ -167,12 +215,15 @@ class TransformerModel(nn.Module):
         # Embed and add positional encoding
         x = self.position_encode(self.embed(x) * math.sqrt(self.d_model))
 
-        # Pass through TransformerEncoder with causal mask
-        out = self.decoder(
-            src=x,
-            mask=attn_mask.to(x.device),
-            src_key_padding_mask=key_pad_mask.to(x.device),
-        )
+        # Pass through the stack of custom decoder layers
+        for layer in self.decoder_layers:
+            x = layer(
+                src=x,
+                src_mask=attn_mask.to(x.device),
+                src_key_padding_mask=key_pad_mask.to(x.device),
+            )
+        # Apply final normalization before projection
+        out = self.final_norm(x)
         return self.projection(out)  # (T,B,V)
 
 
