@@ -159,9 +159,7 @@ class TransformerModel(nn.Module):
             batch_first=False,
             norm_first=True,
         )
-        self.transformer_encoder = nn.TransformerEncoder(
-            enc_layer, num_layers=NUM_LAYERS
-        )
+        self.decoder = nn.TransformerEncoder(enc_layer, num_layers=NUM_LAYERS)
         self.projection = nn.Linear(in_features=D_MODEL, out_features=len(vocab))
 
     def forward(self, x, attn_mask, key_pad_mask):
@@ -170,7 +168,7 @@ class TransformerModel(nn.Module):
         x = self.position_encode(self.embed(x) * math.sqrt(self.d_model))
 
         # Pass through TransformerEncoder with causal mask
-        out = self.transformer_encoder(
+        out = self.decoder(
             src=x,
             mask=attn_mask.to(x.device),
             src_key_padding_mask=key_pad_mask.to(x.device),
