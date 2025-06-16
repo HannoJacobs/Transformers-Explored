@@ -157,7 +157,7 @@ class TransformerModel(nn.Module):
             dim_feedforward=DIM_FEEDFORWARD,
             dropout=DROPOUT,
             batch_first=False,
-            norm_first=True,  # Recommended for stability
+            norm_first=True,
         )
         self.transformer_encoder = nn.TransformerEncoder(
             enc_layer, num_layers=NUM_LAYERS
