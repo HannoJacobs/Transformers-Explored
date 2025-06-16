@@ -1,5 +1,4 @@
-# mha.py
-
+# pylint: disable=E0633,E1102
 import math
 import torch
 from torch import nn
@@ -55,13 +54,11 @@ class MHA(nn.Module):
         if torch.equal(query, key) and torch.equal(key, value):
             q, k, v = self.in_proj(query).chunk(3, dim=-1)
         else:
-            # pylint: disable=E0633
             w_q, w_k, w_v = self.in_proj.weight.chunk(3, dim=0)
             b_q, b_k, b_v = self.in_proj.bias.chunk(3, dim=0)
             q = nn.functional.linear(query, w_q, b_q)
             k = nn.functional.linear(key, w_k, b_k)
             v = nn.functional.linear(value, w_v, b_v)
-            # pylint: enable=E0633
 
         # 2. Reshape for Multi-Head Computation
         q = q.view(seq_len_q, batch_size, self.num_heads, self.head_dim).permute(
@@ -87,7 +84,6 @@ class MHA(nn.Module):
 
         attn_weights = torch.nn.functional.softmax(scores, dim=-1)
         attn_weights = self.attn_dropout(attn_weights)
-
         context = torch.matmul(attn_weights, v)
 
         # 4. Concatenate Heads and Project
@@ -99,7 +95,6 @@ class MHA(nn.Module):
 
         attn_output = self.out_proj(context)
 
-        # --- THIS IS THE CRITICAL FIX ---
         # `nn.MultiheadAttention` always returns a tuple. When `need_weights=False`,
         # the second element of the tuple is None. We must replicate this behavior
         # for our module to be a drop-in replacement.
