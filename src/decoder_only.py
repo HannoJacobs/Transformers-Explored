@@ -19,12 +19,12 @@ FILE_NAME = "2_full"
 DATA_PATH = f"Datasets/tiny_shakespeare_{FILE_NAME}.txt"
 
 BATCH_SIZE = 64
-EPOCHS = 20
+EPOCHS = 10
 LEARNING_RATE = 3e-4
 D_MODEL = 512
 NHEAD = 8
 NUM_LAYERS = 4
-DIM_FEEDFORWARD = 1024
+DIM_FEEDFORWARD = 512
 DROPOUT = 0.1
 INPUT_MAX_SEQ_LEN = 10
 OUTPUT_MAX_SEQ_LEN = 10
@@ -157,11 +157,9 @@ class TransformerModel(nn.Module):
             dim_feedforward=DIM_FEEDFORWARD,
             dropout=DROPOUT,
             batch_first=False,
-            norm_first=True,  # Recommended for stability
+            norm_first=True,
         )
-        self.transformer_encoder = nn.TransformerEncoder(
-            enc_layer, num_layers=NUM_LAYERS
-        )
+        self.decoder = nn.TransformerEncoder(enc_layer, num_layers=NUM_LAYERS)
         self.projection = nn.Linear(in_features=D_MODEL, out_features=len(vocab))
 
     def forward(self, x, attn_mask, key_pad_mask):
@@ -170,7 +168,7 @@ class TransformerModel(nn.Module):
         x = self.position_encode(self.embed(x) * math.sqrt(self.d_model))
 
         # Pass through TransformerEncoder with causal mask
-        out = self.transformer_encoder(
+        out = self.decoder(
             src=x,
             mask=attn_mask.to(x.device),
             src_key_padding_mask=key_pad_mask.to(x.device),
