@@ -4,9 +4,9 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
-from src.fp_decoder_only import *
+from src.decoder_only import *
 
-MODEL_PATH = "models/fp_decoder_only_latest.pth"
+MODEL_PATH = "models/decoder_only_latest.pth"
 INFER_TEXTS = [
     "We are accounted poor citizens, the patricians good.",
     "Would you proceed especially against",
