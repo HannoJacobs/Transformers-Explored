@@ -34,7 +34,7 @@ INPUT_MAX_SEQ_LEN = 10
 OUTPUT_MAX_SEQ_LEN = 10
 MAX_GEN_LEN = 100
 MIN_FREQ = 1
-MASK_VAL = float("-inf")  # -1e9  # 🔑 large negative instead of -inf
+MASK_VAL = float("-inf")
 MAX_SEQ_LEN = max(INPUT_MAX_SEQ_LEN, OUTPUT_MAX_SEQ_LEN) + 2  # (+2 for BOS/EOS)
 PAD_TOKEN, UNK_TOKEN, BOS_TOKEN, EOS_TOKEN = "<pad>", "<unk>", "<bos>", "<eos>"
 
