@@ -142,63 +142,140 @@ class PositionalEncoding(nn.Module):
 
 
 class CustomDecoderLayer(nn.Module):
-    """Custom Transformer Decoder Layer using nn.MultiheadAttention (pre-norm)."""
+    """
+    Custom Transformer Decoder Layer (Pre-Norm, Decoder-Only)
+    ---------------------------------------------------------
+    This class implements a single layer of a decoder-only Transformer, as used in
+    autoregressive language models (e.g., GPT). It is designed for educational clarity.
+
+    Key Components:
+    - Multi-Head Self-Attention (MHA): Allows each position in the sequence to attend
+        to all previous positions (including itself), enabling the model to capture dependencies and context across the sequence.
+    - Feedforward Network (FFN): Applies a position-wise nonlinearity to each token embedding, increasing model capacity.
+    - Layer Normalization (Pre-Norm): Normalizes inputs before each sub-layer, which helps with training stability.
+    - Residual Connections: Add the input of each sub-layer to its output, allowing gradients to flow more easily and improving optimization.
+    - Dropout: Regularizes the model to prevent overfitting.
+
+    Args:
+        d_model (int): Dimensionality of the input embeddings.
+        nhead (int): Number of attention heads in MHA.
+        dim_feedforward (int): Hidden size of the feedforward network.
+        dropout (float): Dropout probability.
+
+    Forward Pass:
+        src: (Seq_Len, Batch, D_Model) - Input sequence embeddings.
+        src_mask: (Seq_Len, Seq_Len) - Causal mask to prevent attending to future tokens.
+        src_key_padding_mask: (Batch, Seq_Len) - Mask to ignore padding tokens.
+
+    Returns:
+        (Seq_Len, Batch, D_Model) - Output sequence embeddings after attention and FFN.
+    """
 
     def __init__(self, d_model, nhead, dim_feedforward, dropout):
         super().__init__()
+        # Multi-Head Self-Attention: Each token can attend to all previous tokens.
+        # Uses a custom MHA implementation for educational purposes.
         self.self_attn = MHA(
             embed_dim=d_model,
             num_heads=nhead,
             dropout=dropout,
         )
-        # Feedforward Network
+        # Feedforward Network: Two linear layers with a nonlinearity in between.
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(dim_feedforward, d_model)
 
-        # Normalization and Dropout layers
+        # Layer Normalization (Pre-Norm): Applied before each sub-layer.
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
+        # Dropout for regularization after each sub-layer.
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
+        # Nonlinearity for the feedforward network.
         self.activation = nn.ReLU()
 
     def forward(self, src, src_mask=None, src_key_padding_mask=None):
-        """Forward pass for the custom decoder layer (pre-norm)."""
+        """
+        Forward pass for a single decoder layer.
+
+        1. Pre-Norm & Self-Attention:
+            - Normalize the input.
+            - Apply multi-head self-attention, using a causal mask to ensure that each position can only attend to itself and previous positions.
+            - Add the result to the input (residual connection).
+        2. Pre-Norm & Feedforward:
+            - Normalize the result.
+            - Apply the feedforward network (linear -> activation -> dropout -> linear).
+            - Add the result to the input (residual connection).
+
+        Args:
+            src: (Seq_Len, Batch, D_Model) - Input embeddings.
+            src_mask: (Seq_Len, Seq_Len) - Causal mask for autoregressive modeling.
+            src_key_padding_mask: (Batch, Seq_Len) - Mask for padding tokens.
+
+        Returns:
+            (Seq_Len, Batch, D_Model) - Output embeddings.
+        """
         x = src
-        # Self-attention block with pre-normalization
+        # ---- 1. Self-Attention Block (Pre-Norm) ----
         norm_x = self.norm1(x)
         attn_output, _ = self.self_attn(
             query=norm_x,
             key=norm_x,
             value=norm_x,
-            attn_mask=src_mask,
-            key_padding_mask=src_key_padding_mask,
-            need_weights=False,  # More efficient if weights are not needed
+            attn_mask=src_mask,  # Prevents attending to future tokens
+            key_padding_mask=src_key_padding_mask,  # Ignores padding tokens
+            need_weights=False,  # We don't need attention weights for training
         )
+        # Residual connection and dropout
         x = x + self.dropout1(attn_output)
 
-        # Feedforward block with pre-normalization
+        # ---- 2. Feedforward Block (Pre-Norm) ----
         norm_x_ff = self.norm2(x)
         ff_output = self.linear2(self.dropout(self.activation(self.linear1(norm_x_ff))))
+        # Residual connection and dropout
         x = x + self.dropout2(ff_output)
         return x
 
 
 class TransformerModel(nn.Module):
-    """A decoder-only Transformer model for autoregressive language modeling."""
+    """
+    Decoder-Only Transformer Model for Autoregressive Language Modeling
+    -------------------------------------------------------------------
+    This class implements a full decoder-only Transformer, suitable for tasks like
+    next-token prediction, text generation, and language modeling (e.g., GPT-style).
+
+    Model Architecture:
+    - Embedding Layer: Maps token IDs to dense vectors.
+    - Positional Encoding: Adds information about token positions (since attention is permutation-invariant).
+    - Stack of Decoder Layers: Each layer consists of multi-head self-attention and a feedforward network, as described above.
+    - Final Layer Normalization: Normalizes the output before projection.
+    - Output Projection: Maps the final hidden states to vocabulary logits.
+
+    Args:
+        vocab (dict): Vocabulary mapping tokens to integer IDs.
+
+    Forward Pass:
+        x: (Seq_Len, Batch) - Input token IDs.
+        attn_mask: (Seq_Len, Seq_Len) - Causal mask for autoregressive modeling.
+        key_pad_mask: (Batch, Seq_Len) - Mask for padding tokens.
+
+    Returns:
+        (Seq_Len, Batch, Vocab_Size) - Logits for each token in the vocabulary.
+    """
 
     def __init__(self, vocab):
         super().__init__()
         self.d_model = D_MODEL
+        # Embedding layer: Converts token IDs to dense vectors.
         self.embed = nn.Embedding(
             num_embeddings=len(vocab), embedding_dim=D_MODEL, padding_idx=0
         )
+        # Positional encoding: Adds position information to embeddings.
         self.position_encode = PositionalEncoding(
             d_model=D_MODEL, dropout=DROPOUT, max_len=MAX_GEN_LEN + 50
         )
 
-        # Create a stack of custom decoder layers
+        # Stack of decoder layers: Each layer is a CustomDecoderLayer.
         self.decoder_layers = nn.ModuleList(
             [
                 CustomDecoderLayer(
@@ -210,24 +287,52 @@ class TransformerModel(nn.Module):
                 for _ in range(NUM_LAYERS)
             ]
         )
-        self.final_norm = nn.LayerNorm(D_MODEL)  # Final normalization
+        # Final normalization before output projection.
+        self.final_norm = nn.LayerNorm(D_MODEL)
+        # Output projection: Maps hidden states to vocabulary logits.
         self.projection = nn.Linear(in_features=D_MODEL, out_features=len(vocab))
 
     def forward(self, x, attn_mask, key_pad_mask):
-        """Forward pass for the decoder-only model."""
-        # Embed and add positional encoding
+        """
+        Forward pass for the decoder-only Transformer.
+
+        1. Embedding and Positional Encoding:
+            - Convert input token IDs to embeddings.
+            - Scale embeddings by sqrt(d_model) (as in Vaswani et al.).
+            - Add positional encodings to provide order information.
+
+        2. Pass through Decoder Layers:
+            - Each layer applies multi-head self-attention and a feedforward network, using causal and padding masks to ensure proper autoregressive behavior.
+
+        3. Final Normalization and Output Projection:
+            - Normalize the output.
+            - Project to vocabulary size to obtain logits for each token.
+
+        Args:
+            x: (Seq_Len, Batch) - Input token IDs.
+            attn_mask: (Seq_Len, Seq_Len) - Causal mask for autoregressive modeling.
+            key_pad_mask: (Batch, Seq_Len) - Mask for padding tokens.
+
+        Returns:
+            (Seq_Len, Batch, Vocab_Size) - Logits for each token in the vocabulary.
+        """
+        # ---- 1. Embedding and Positional Encoding ----
+        # Shape: (Seq_Len, Batch, D_Model)
         x = self.position_encode(self.embed(x) * math.sqrt(self.d_model))
 
-        # Pass through the stack of custom decoder layers
+        # ---- 2. Decoder Layers ----
+        # Each layer applies self-attention and feedforward transformations.
         for layer in self.decoder_layers:
             x = layer(
                 src=x,
                 src_mask=attn_mask.to(x.device),
                 src_key_padding_mask=key_pad_mask.to(x.device),
             )
-        # Apply final normalization before projection
+
+        # ---- 3. Final Normalization and Output Projection ----
         out = self.final_norm(x)
-        return self.projection(out)  # (T,B,V)
+        # Shape: (Seq_Len, Batch, Vocab_Size)
+        return self.projection(out)
 
 
 def train_epoch(model, loader, optimizer_, loss_criterion_, pad_id):
