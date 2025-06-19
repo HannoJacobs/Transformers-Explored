@@ -25,4 +25,6 @@ logging/*
 models/*
 
 # ignore large datasets
-Datasets/*
+Datasets/eng_afr/afr.txt
+Datasets/eng_afr/eng.txt
+Datasets/eng_afr/README.Bilingual.English-Afrikaans.txt
