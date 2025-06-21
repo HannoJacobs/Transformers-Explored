@@ -175,18 +175,23 @@ class CustomEncoderLayer(nn.Module):
 
     def __init__(self, d_model, nhead, dim_feedforward, dropout):
         super().__init__()
+
         # Multi-Head Self-Attention: Each token attends to all tokens in the input.
         self.self_attn = MHA(embed_dim=d_model, num_heads=nhead, dropout=dropout)
+
         # Feedforward Network: Two linear layers with a nonlinearity in between.
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(dim_feedforward, d_model)
+
         # Layer Normalization (Pre-Norm): Applied before each sub-layer.
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
+
         # Dropout for regularization after each sub-layer.
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
+
         # Nonlinearity for the feedforward network.
         self.activation = nn.ReLU()
 
@@ -211,16 +216,18 @@ class CustomEncoderLayer(nn.Module):
         Returns:
             (Seq_Len, Batch, D_Model) - Output embeddings.
         """
-        # ---- 1. Self-Attention Block ----
-        src2 = self.self_attn(
+        #### 1. Self-Attention Block ####
+        src2, _ = self.self_attn(
             src, src, src, key_padding_mask=src_key_padding_mask, need_weights=False
-        )[0]
-        src = src + self.dropout1(src2)
+        )
+        src = src + self.dropout1(src2)  # residual + dropout
         src = self.norm1(src)
-        # ---- 2. Feedforward Block ----
+
+        #### 2. Feedforward Block ####
         src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
-        src = src + self.dropout2(src2)
+        src = src + self.dropout2(src2)  # residual + dropout
         src = self.norm2(src)
+
         return src
 
 
@@ -262,22 +269,28 @@ class CustomDecoderLayer(nn.Module):
 
     def __init__(self, d_model, nhead, dim_feedforward, dropout):
         super().__init__()
+
         # Masked Multi-Head Self-Attention: Each target token attends to itself and previous tokens.
         self.self_attn = MHA(embed_dim=d_model, num_heads=nhead, dropout=dropout)
+
         # Cross-Attention: Each target token attends to all source tokens (encoder output).
         self.multihead_attn = MHA(embed_dim=d_model, num_heads=nhead, dropout=dropout)
+
         # Feedforward Network: Two linear layers with a nonlinearity in between.
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(dim_feedforward, d_model)
+
         # Layer Normalization (Pre-Norm): Applied before each sub-layer.
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         self.norm3 = nn.LayerNorm(d_model)
+
         # Dropout for regularization after each sub-layer.
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
         self.dropout3 = nn.Dropout(dropout)
+
         # Nonlinearity for the feedforward network.
         self.activation = nn.ReLU()
 
@@ -314,31 +327,34 @@ class CustomDecoderLayer(nn.Module):
         Returns:
             (Tgt_Len, Batch, D_Model) - Output embeddings.
         """
-        # ---- 1. Masked Self-Attention Block ----
-        tgt2 = self.self_attn(
+        #### 1. Masked Self-Attention Block ####
+        tgt2, _ = self.self_attn(
             tgt,
             tgt,
             tgt,
             attn_mask=tgt_mask,
             key_padding_mask=tgt_key_padding_mask,
             need_weights=False,
-        )[0]
-        tgt = tgt + self.dropout1(tgt2)
+        )
+        tgt = tgt + self.dropout1(tgt2)  # residual + dropout
         tgt = self.norm1(tgt)
-        # ---- 2. Cross-Attention Block ----
-        tgt2 = self.multihead_attn(
+
+        #### 2. Cross-Attention Block ####
+        tgt2, _ = self.multihead_attn(
             tgt,
             memory,
             memory,
             key_padding_mask=memory_key_padding_mask,
             need_weights=False,
-        )[0]
-        tgt = tgt + self.dropout2(tgt2)
+        )
+        tgt = tgt + self.dropout2(tgt2)  # residual + dropout
         tgt = self.norm2(tgt)
-        # ---- 3. Feedforward Block ----
+
+        #### 3. Feedforward Block ####
         tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt))))
-        tgt = tgt + self.dropout3(tgt2)
+        tgt = tgt + self.dropout3(tgt2)  # residual + dropout
         tgt = self.norm3(tgt)
+
         return tgt
 
 
@@ -376,6 +392,7 @@ class TransformerModel(nn.Module):
     def __init__(self, source_vocab, target_vocab):
         super().__init__()
         self.d_model = D_MODEL
+
         # Embedding layers for source and target vocabularies.
         self.source_embed = nn.Embedding(
             num_embeddings=len(source_vocab), embedding_dim=D_MODEL, padding_idx=0
@@ -383,6 +400,7 @@ class TransformerModel(nn.Module):
         self.target_embed = nn.Embedding(
             num_embeddings=len(target_vocab), embedding_dim=D_MODEL, padding_idx=0
         )
+
         # Positional encoding for both source and target sequences.
         self.position_encode = PositionalEncoding(
             d_model=D_MODEL, dropout=DROPOUT, max_len=MAX_SEQ_LEN
@@ -400,6 +418,7 @@ class TransformerModel(nn.Module):
                 for _ in range(NUM_LAYERS)
             ]
         )
+
         # Stack of decoder layers: Each is a CustomDecoderLayer.
         self.decoder_layers = nn.ModuleList(
             [
