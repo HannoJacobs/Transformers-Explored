@@ -98,22 +98,22 @@ class MHA(nn.Module):
         # 3. Scaled Dot-Product Attention
         # Compute attention scores: (B, H, L, D) x (B, H, D, S) -> (B, H, L, S)
         # Each query vector attends to all key vectors.
-        scores = torch.matmul(q, k.transpose(-2, -1)) / self.scale
+        attention_scores = torch.matmul(q, k.transpose(-2, -1)) / self.scale
 
-        # Optionally add an attention mask (e.g., for causal or padding masking)
+        # Add an attention mask (e.g., for causal or padding masking)
         if attn_mask is not None:
             # attn_mask should be broadcastable to (B, H, L, S)
-            scores = scores + attn_mask
+            attention_scores = attention_scores + attn_mask
 
-        # Optionally mask out padding tokens in the key
+        # mask the parts of the sequences in the batches that are shorter than max len
         if key_padding_mask is not None:
             # key_padding_mask: (B, S) -> (B, 1, 1, S) for broadcasting
-            scores = scores.masked_fill(
+            attention_scores = attention_scores.masked_fill(
                 key_padding_mask.unsqueeze(1).unsqueeze(2), float("-inf")
             )
 
         # Softmax over the last dimension (S: source sequence length)
-        attn_weights = torch.nn.functional.softmax(scores, dim=-1)
+        attn_weights = torch.nn.functional.softmax(attention_scores, dim=-1)
         attn_weights = self.attn_dropout(attn_weights)  # Regularization
 
         # Weighted sum of value vectors, using attention weights
