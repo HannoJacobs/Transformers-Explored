@@ -83,7 +83,8 @@ class MHA(nn.Module):
 
         # 2. Reshape for Multi-Head Computation
         # We want to split the embedding into multiple heads for parallel attention.
-        # New shape: (Batch, Num_Heads, Seq_Len, Head_Dim)
+        # Initial shape: (Seq_Len, Batch_Size, Embed_Dim)
+        # New shape after view+permute: (Batch, Num_Heads, Seq_Len, Head_Dim)
         q = q.view(seq_len_q, batch_size, self.num_heads, self.head_dim).permute(
             1, 2, 0, 3
         )  # (B, H, L, D)
@@ -97,29 +98,29 @@ class MHA(nn.Module):
         # 3. Scaled Dot-Product Attention
         # Compute attention scores: (B, H, L, D) x (B, H, D, S) -> (B, H, L, S)
         # Each query vector attends to all key vectors.
-        scores = torch.matmul(q, k.transpose(-2, -1)) / self.scale
+        attention_scores = torch.matmul(q, k.transpose(-2, -1)) / self.scale
 
-        # Optionally add an attention mask (e.g., for causal or padding masking)
+        # Add an attention mask (e.g., for causal or padding masking)
         if attn_mask is not None:
             # attn_mask should be broadcastable to (B, H, L, S)
-            scores = scores + attn_mask
+            attention_scores = attention_scores + attn_mask
 
-        # Optionally mask out padding tokens in the key
+        # mask the parts of the sequences in the batches that are shorter than max len
         if key_padding_mask is not None:
             # key_padding_mask: (B, S) -> (B, 1, 1, S) for broadcasting
-            scores = scores.masked_fill(
+            attention_scores = attention_scores.masked_fill(
                 key_padding_mask.unsqueeze(1).unsqueeze(2), float("-inf")
             )
 
-        # Softmax over the last dimension (S: source sequence length)
-        attn_weights = torch.nn.functional.softmax(scores, dim=-1)
+        # 4. Softmax over the last dimension (S: source sequence length)
+        attn_weights = torch.nn.functional.softmax(attention_scores, dim=-1)
         attn_weights = self.attn_dropout(attn_weights)  # Regularization
 
         # Weighted sum of value vectors, using attention weights
         # (B, H, L, S) x (B, H, S, D) -> (B, H, L, D)
         context = torch.matmul(attn_weights, v)
 
-        # 4. Concatenate Heads and Project
+        # 5. Concatenate Heads and Project
         # Rearrange and merge heads: (B, H, L, D) -> (L, B, H*D=E)
         context = (
             context.permute(2, 0, 1, 3)  # (L, B, H, D)
@@ -127,7 +128,7 @@ class MHA(nn.Module):
             .view(seq_len_q, batch_size, self.embed_dim)
         )
 
-        # Final output projection: (L, B, E) -> (L, B, E)
+        # 6. Final output projection: (L, B, E) -> (L, B, E)
         attn_output = self.out_proj(context)
 
         # Return output and (optionally) average attention weights over heads
