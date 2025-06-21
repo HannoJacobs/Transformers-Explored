@@ -112,7 +112,7 @@ class MHA(nn.Module):
                 key_padding_mask.unsqueeze(1).unsqueeze(2), float("-inf")
             )
 
-        # Softmax over the last dimension (S: source sequence length)
+        # 4. Softmax over the last dimension (S: source sequence length)
         attn_weights = torch.nn.functional.softmax(attention_scores, dim=-1)
         attn_weights = self.attn_dropout(attn_weights)  # Regularization
 
@@ -120,7 +120,7 @@ class MHA(nn.Module):
         # (B, H, L, S) x (B, H, S, D) -> (B, H, L, D)
         context = torch.matmul(attn_weights, v)
 
-        # 4. Concatenate Heads and Project
+        # 5. Concatenate Heads and Project
         # Rearrange and merge heads: (B, H, L, D) -> (L, B, H*D=E)
         context = (
             context.permute(2, 0, 1, 3)  # (L, B, H, D)
@@ -128,7 +128,7 @@ class MHA(nn.Module):
             .view(seq_len_q, batch_size, self.embed_dim)
         )
 
-        # Final output projection: (L, B, E) -> (L, B, E)
+        # 6. Final output projection: (L, B, E) -> (L, B, E)
         attn_output = self.out_proj(context)
 
         # Return output and (optionally) average attention weights over heads
