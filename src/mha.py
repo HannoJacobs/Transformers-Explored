@@ -83,7 +83,8 @@ class MHA(nn.Module):
 
         # 2. Reshape for Multi-Head Computation
         # We want to split the embedding into multiple heads for parallel attention.
-        # New shape: (Batch, Num_Heads, Seq_Len, Head_Dim)
+        # Initial shape: (Seq_Len, Batch_Size, Embed_Dim)
+        # New shape after view+permute: (Batch, Num_Heads, Seq_Len, Head_Dim)
         q = q.view(seq_len_q, batch_size, self.num_heads, self.head_dim).permute(
             1, 2, 0, 3
         )  # (B, H, L, D)
