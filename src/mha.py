@@ -3,28 +3,9 @@ import math
 import torch
 from torch import nn
 
-################################################################################
-# Multi-Head Attention (MHA) - Educational Implementation
-#
-# This file provides a from-scratch, annotated implementation of Multi-Head
-# Attention (MHA), a core component of the Transformer architecture.
-#
-# MHA allows the model to jointly attend to information from different
-# representation subspaces at different positions. It is widely used in
-# natural language processing (NLP) and other domains.
-#
-# This implementation is designed for learning and understanding, and closely
-# follows the interface of PyTorch's `nn.MultiheadAttention` (with batch_first=False).
-################################################################################
-
 
 class MHA(nn.Module):
     """
-    Multi-Head Attention (MHA) module - from scratch, for learning.
-
-    This class implements the core logic of MHA as described in the "Attention
-    is All You Need" paper (Vaswani et al., 2017).
-
     Key Features:
     - Drop-in replacement for `nn.MultiheadAttention` (when `batch_first=False`)
     - Assumes input tensors are shaped (Seq_Len, Batch_Size, Embed_Dim)
@@ -34,10 +15,6 @@ class MHA(nn.Module):
         embed_dim (int): Total dimension of the model (input embedding size)
         num_heads (int): Number of parallel attention heads
         dropout (float): Dropout probability on attention weights
-
-    Example:
-        mha = MHA(embed_dim=512, num_heads=8)
-        output, attn_weights = mha(query, key, value)
     """
 
     def __init__(self, embed_dim, num_heads, dropout=0.0):
@@ -94,11 +71,10 @@ class MHA(nn.Module):
         # 1. Combined Linear Projection for Q, K, V
         # If query, key, and value are the same tensor (self-attention), we can
         # project them together for efficiency.
-        if torch.equal(query, key) and torch.equal(key, value):
+        if torch.equal(query, key) and torch.equal(key, value):  # self-attention
             # in_proj returns (L, B, 3*E); chunk into Q, K, V along the last dim
             q, k, v = self.in_proj(query).chunk(3, dim=-1)
-        else:
-            # For cross-attention, project Q, K, V separately using the same weights
+        else:  # For cross-attention, project Q, K, V separately using the same weights
             w_q, w_k, w_v = self.in_proj.weight.chunk(3, dim=0)
             b_q, b_k, b_v = self.in_proj.bias.chunk(3, dim=0)
             q = nn.functional.linear(query, w_q, b_q)
@@ -161,16 +137,3 @@ class MHA(nn.Module):
         else:
             # Return None for the weights, but still inside a tuple (for API compatibility)
             return attn_output, None
-
-
-################################################################################
-# Summary of Key Concepts:
-#
-# - Q, K, V: Query, Key, Value projections of the input(s)
-# - Multi-Head: Split embedding into multiple "heads" for parallel attention
-# - Scaled Dot-Product: Compute attention scores, scale by sqrt(head_dim)
-# - Masking: Prevent attention to certain positions (e.g., padding, future tokens)
-# - Output: Concatenate heads, project back to original embedding size
-#
-# This implementation is intended for educational purposes and clarity.
-################################################################################
