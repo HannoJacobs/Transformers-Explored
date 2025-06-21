@@ -173,6 +173,7 @@ class CustomDecoderLayer(nn.Module):
 
     def __init__(self, d_model, nhead, dim_feedforward, dropout):
         super().__init__()
+
         # Multi-Head Self-Attention: Each token can attend to all previous tokens.
         # Uses a custom MHA implementation for educational purposes.
         self.self_attn = MHA(
@@ -180,6 +181,7 @@ class CustomDecoderLayer(nn.Module):
             num_heads=nhead,
             dropout=dropout,
         )
+
         # Feedforward Network: Two linear layers with a nonlinearity in between.
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
@@ -188,9 +190,11 @@ class CustomDecoderLayer(nn.Module):
         # Layer Normalization (Pre-Norm): Applied before each sub-layer.
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
+
         # Dropout for regularization after each sub-layer.
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
+
         # Nonlinearity for the feedforward network.
         self.activation = nn.ReLU()
 
@@ -216,7 +220,8 @@ class CustomDecoderLayer(nn.Module):
             (Seq_Len, Batch, D_Model) - Output embeddings.
         """
         x = src
-        # ---- 1. Self-Attention Block (Pre-Norm) ----
+
+        #### 1. Self-Attention Block ####
         norm_x = self.norm1(x)
         attn_output, _ = self.self_attn(
             query=norm_x,
@@ -226,14 +231,13 @@ class CustomDecoderLayer(nn.Module):
             key_padding_mask=src_key_padding_mask,  # Ignores padding tokens
             need_weights=False,  # We don't need attention weights for training
         )
-        # Residual connection and dropout
-        x = x + self.dropout1(attn_output)
+        x = x + self.dropout1(attn_output)  # Residual connection and dropout
 
-        # ---- 2. Feedforward Block (Pre-Norm) ----
+        #### 2. Feedforward Block ####
         norm_x_ff = self.norm2(x)
         ff_output = self.linear2(self.dropout(self.activation(self.linear1(norm_x_ff))))
-        # Residual connection and dropout
-        x = x + self.dropout2(ff_output)
+        x = x + self.dropout2(ff_output)  # Residual connection and dropout
+
         return x
 
 
@@ -266,10 +270,12 @@ class TransformerModel(nn.Module):
     def __init__(self, vocab):
         super().__init__()
         self.d_model = D_MODEL
+
         # Embedding layer: Converts token IDs to dense vectors.
         self.embed = nn.Embedding(
             num_embeddings=len(vocab), embedding_dim=D_MODEL, padding_idx=0
         )
+
         # Positional encoding: Adds position information to embeddings.
         self.position_encode = PositionalEncoding(
             d_model=D_MODEL, dropout=DROPOUT, max_len=MAX_GEN_LEN + 50
@@ -287,8 +293,10 @@ class TransformerModel(nn.Module):
                 for _ in range(NUM_LAYERS)
             ]
         )
+
         # Final normalization before output projection.
         self.final_norm = nn.LayerNorm(D_MODEL)
+
         # Output projection: Maps hidden states to vocabulary logits.
         self.projection = nn.Linear(in_features=D_MODEL, out_features=len(vocab))
 
@@ -316,11 +324,11 @@ class TransformerModel(nn.Module):
         Returns:
             (Seq_Len, Batch, Vocab_Size) - Logits for each token in the vocabulary.
         """
-        # ---- 1. Embedding and Positional Encoding ----
+        #### 1. Embedding and Positional Encoding ####
         # Shape: (Seq_Len, Batch, D_Model)
         x = self.position_encode(self.embed(x) * math.sqrt(self.d_model))
 
-        # ---- 2. Decoder Layers ----
+        #### 2. Decoder Layers ####
         # Each layer applies self-attention and feedforward transformations.
         for layer in self.decoder_layers:
             x = layer(
@@ -329,10 +337,10 @@ class TransformerModel(nn.Module):
                 src_key_padding_mask=key_pad_mask.to(x.device),
             )
 
-        # ---- 3. Final Normalization and Output Projection ----
+        #### 3. Final Normalization and Output Projection ####
         out = self.final_norm(x)
-        # Shape: (Seq_Len, Batch, Vocab_Size)
-        return self.projection(out)
+
+        return self.projection(out)  # Shape: (Seq_Len, Batch, Vocab_Size)
 
 
 def train_epoch(model, loader, optimizer_, loss_criterion_, pad_id):
