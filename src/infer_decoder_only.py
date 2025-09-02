@@ -15,6 +15,14 @@ INFER_TEXTS = [
     "Very well; and could be content to",
 ]
 
+# Temperature settings with paired top_k values for combined effects demo
+TEMP_CONFIGS = [
+    (0.0, 1, "❄️"),  # Deterministic + top_1 (only best token)
+    (0.5, 5, "🌤️"),  # Low creativity + small top_k
+    (1.0, 20, "🌡️"),  # Balanced + medium top_k
+    (2.0, 50, "🔥"),  # High creativity + large top_k
+]
+
 
 def load_model(ckpt_path: str):
     device = DEVICE
@@ -28,11 +36,18 @@ def load_model(ckpt_path: str):
 
 
 model, vocab, inv_vocab = load_model(MODEL_PATH)
-print("\n--- Text Generation ---")
+
+print("\nTemperature + Top-K Effects Demo")
+print("=" * 40)
+
 for text in INFER_TEXTS:
-    generated = infer(
-        model, text, vocab, inv_vocab, max_len=50, top_k=10, temperature=0.8
-    )
-    print(f"PROMPT    : {text}")
-    print(f"GENERATED : {generated}")
-    print("-" * 50)
+    print(f"\nPrompt: {text}")
+    print("-" * 30)
+
+    for temp, top_k, emoji in TEMP_CONFIGS:
+        generated = infer(
+            model, text, vocab, inv_vocab, max_len=20, temperature=temp, top_k=top_k
+        )
+        print(f"{emoji} {temp:.1f}(k={top_k}): {generated}")
+
+    print()

@@ -17,9 +17,9 @@ from torch.utils.data import Dataset, DataLoader, random_split
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
 from src.mha import MHA  # pylint: disable=C0413
 
-# FILE_NAME = "0_nano"
+FILE_NAME = "0_nano"
 # FILE_NAME = "1_mini"
-FILE_NAME = "2_full"
+# FILE_NAME = "2_full"
 DATA_PATH = f"Datasets/tiny_shakespeare_{FILE_NAME}.txt"
 
 BATCH_SIZE = 64
@@ -394,8 +394,20 @@ def eval_epoch(model, loader, loss_criterion_, pad_id):
     return tot_loss / tot_batches, tot_correct / tot_tok
 
 
-def infer(model, prompt, vocab, inv_vocab, max_len=100, temperature=0.8, top_k=20):
-    """Generates text using the trained model with temperature and top-k sampling."""
+def infer(model, prompt, vocab, inv_vocab, max_len=100, temperature=0.0, top_k=20):
+    """Generates text using the trained model with temperature and top-k sampling.
+
+    Args:
+        model: Trained Transformer model.
+        prompt (str): Input prompt text.
+        vocab (dict): Token to id mapping.
+        inv_vocab (dict): Id to token mapping.
+        max_len (int): Maximum number of tokens to generate.
+        temperature (float): Sampling temperature in [0.0, 2.0].
+            - 0.0 => deterministic (greedy argmax)
+            - >0  => probabilistic sampling after scaling logits by 1/temperature
+        top_k (int): If >0, restrict sampling to the top-k tokens (default 20).
+    """
     model.eval()
     tokens = tokenize(prompt)
     token_ids = encode(tokens, vocab)
@@ -403,6 +415,15 @@ def infer(model, prompt, vocab, inv_vocab, max_len=100, temperature=0.8, top_k=2
     # Add BOS token if not present
     if not token_ids or token_ids[0] != vocab[BOS_TOKEN]:
         token_ids = [vocab[BOS_TOKEN]] + token_ids
+
+    # Track original prompt length (excluding BOS token)
+    original_prompt_length = len(token_ids) - 1  # -1 for BOS token
+
+    # Clamp controls
+    temperature = 0.0 if temperature is None else float(temperature)
+    temperature = max(0.0, min(2.0, temperature))
+    top_k = 0 if top_k is None else int(top_k)
+    top_k = max(0, top_k)
 
     for _ in range(max_len):
         # Prepare input
@@ -420,23 +441,32 @@ def infer(model, prompt, vocab, inv_vocab, max_len=100, temperature=0.8, top_k=2
         with torch.no_grad():
             logits = model(x, attn_mask, key_pad_mask)
 
-            # Sample from the distribution
-            logits = logits[-1, 0] / temperature
-            if top_k > 0:
-                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                logits[logits < v[-1]] = -float("Inf")
+            last_logits = logits[-1, 0]
+            if temperature == 0.0:
+                # Deterministic greedy decoding
+                next_token_id = int(torch.argmax(last_logits, dim=-1).item())
+            else:
+                # Temperature scaling and optional top-k sampling
+                scaled_logits = last_logits / temperature
+                if top_k > 0:
+                    values, _ = torch.topk(
+                        scaled_logits, min(top_k, scaled_logits.size(-1))
+                    )
+                    scaled_logits[scaled_logits < values[-1]] = -float("Inf")
 
-            probs = torch.nn.functional.softmax(logits, dim=-1)
-            next_token_id = torch.multinomial(probs, num_samples=1).item()
+                probs = torch.nn.functional.softmax(scaled_logits, dim=-1)
+                next_token_id = int(torch.multinomial(probs, num_samples=1).item())
 
         if next_token_id == vocab[EOS_TOKEN]:
             break
 
         token_ids.append(next_token_id)
 
-    # Convert back to text
-    words = [inv_vocab.get(i, UNK_TOKEN) for i in token_ids[1:]]  # Skip BOS
-    return " ".join(words)
+    # Convert back to text - return only newly generated words, not the original prompt
+    all_words = [inv_vocab.get(i, UNK_TOKEN) for i in token_ids[1:]]  # Skip BOS
+    # Return only the words generated after the original prompt
+    new_words = all_words[original_prompt_length:]
+    return " ".join(new_words)
 
 
 if __name__ == "__main__":
